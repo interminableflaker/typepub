@@ -1,0 +1,22 @@
+[package]
+name = "typepub"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
+
+[dependencies]
+anyhow = "1.0.71"
+bitflags = "2.3.2"
+crossterm = { git = "https://github.com/crossterm-rs/crossterm/", version = "0.26.1" }
+dirs = "5.0.1"
+roxmltree = "0.18.0"
+simplecss = "0.2.1"
+textwrap = "0.16.0"
+url = "2.4.0"
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

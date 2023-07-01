@@ -2,12 +2,14 @@
 
 wip
 
-e.g.
 Open book at path at third chapter, viewport width maximum 120 characters.
-`typepub path "~/books/Alice's Adventures in Wonderland.epub" 3 --width 120`
-Open a book in default book directory with `hobbit` in its name, chapter eight,
-case insensitive.
-`typepub search hobbit 8`
+```
+typepub path "~/books/Alice's Adventures in Wonderland.epub" 3 --width 120
+```
+Open a book in default book directory with `hobbit` in its name, chapter eight, case insensitive.
+```
+typepub search hobbit 8
+```
 
 ```
 OPTIONS:

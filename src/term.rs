@@ -79,11 +79,7 @@ impl Display {
                     }
                 }
                 // println!("{}", s);
-                let s = s.trim();
-                if !s.is_empty() {
-                    text.push_str(s);
-                    text.push(' ');
-                }
+                text.push_str(&s);
             }
             Content::Linebreak => {
                 while matches!(text.chars().last(), Some(c) if c.is_whitespace()) {
@@ -95,6 +91,7 @@ impl Display {
             Content::Title => todo!(),
         })
         .unwrap();
+        let text = text.trim().to_owned();
         // panic!("{:#?}", text);
         let lines = Self::wrap_text(&text, width);
 

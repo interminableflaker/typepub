@@ -135,7 +135,7 @@ impl std::ops::Sub<Self> for TextPosition {
 // TODO: probably make this configurable
 fn chars_are_equal_including_unicode_alternatives(expected: char, got: char) -> bool {
     match got {
-        '\'' if ['’'].contains(&expected) => true,
+        '\'' if ['‘', '’'].contains(&expected) => true,
         '\"' if ['“', '”'].contains(&expected) => true,
         ' ' if [' '].contains(&expected) => true,
         _ => expected == got,

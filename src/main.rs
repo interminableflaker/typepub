@@ -10,7 +10,7 @@ use typepub::{
     term::Display,
 };
 
-// TODO
+// TODO: features
 // - render styles
 // - nicer virtual styling
 // - chapter select
@@ -20,6 +20,11 @@ use typepub::{
 // - score annotations per paragraph
 // - window resize
 // - sixel images
+
+// TODO: annoyances/bugs
+// - british english uses single quotation marks for speech, prefer double--
+//   convert single quotation marks to double quotations? messes up quotes
+//   within quotes, so will have to parse nested and convert accordingly
 
 fn main() -> anyhow::Result<()> {
     xflags::xflags! {

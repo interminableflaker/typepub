@@ -215,10 +215,14 @@ impl Toc {
             archive: &EpubArchive,
             spine: &Spine,
             entries: &mut Vec<TocEntry>,
+            play_order: &mut Vec<usize>,
             nav_point: Node,
         ) -> anyhow::Result<()> {
             // let id = nav_point.attribute("id").unwrap();
-            let _play_order = nav_point.attribute("playOrder");
+            if let Some(idx) = nav_point.attribute("playOrder").map(str::parse).transpose()? {
+                play_order.push(idx);
+            }
+
             let mut elements = nav_point.children().filter(Node::is_element);
             let name = elements
                 .next()
@@ -253,22 +257,32 @@ impl Toc {
             });
 
             for subpoint in elements {
-                visit_navpoint(archive, spine, entries, subpoint)?;
+                visit_navpoint(archive, spine, entries, play_order, subpoint)?;
             }
 
             Ok(())
         }
 
         let mut entries = Vec::new();
+        let mut play_order = Vec::new();
         for nav_point in nav_map
             .children()
             .filter(Node::is_element)
             .skip_while(|n| n.tag_name().name() == "navInfo")
         {
-            visit_navpoint(archive, spine, &mut entries, nav_point)?;
+            visit_navpoint(archive, spine, &mut entries, &mut play_order, nav_point)?;
+        }
+        if !play_order.is_empty() {
+            assert_eq!(
+                entries.len(), play_order.len(),
+                "if one ncx entry has a play order attribute, they all should",
+            );
+            let mut zipped = play_order.into_iter().zip(entries).collect::<Vec<_>>();
+            zipped.sort_by_key(|(play_order, _)| *play_order);
+            entries = zipped.into_iter().map(|(_, e)| e).collect();
         }
 
-        // println!("{:#?}", entries);
+        // panic!("{:#?}", entries);
 
         Ok(Self(entries))
     }
@@ -752,8 +766,10 @@ fn traverse_body(
 
     if node.is_text() {
         let text = node.text().context("invalid text node")?;
-        let content = Content::Text(style, text);
-        cb(content);
+        if !text.trim().is_empty() {
+            let content = Content::Text(style, text);
+            cb(content);
+        }
         return Ok(false);
     }
 
@@ -766,7 +782,7 @@ fn traverse_body(
 
     match node.tag_name().name() {
         // "a" if node.has_attribute("href") => _ = recurse(node, cb, styles, rules, style, end)?,
-        "p" | "div" | "blockquote" => {
+        "p" | "div" | "blockquote" | "br" => {
             recurse(node, cb, styles, rules, style, end)?;
             cb(Content::Linebreak)
         }

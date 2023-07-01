@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{self, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context as _;
@@ -33,6 +33,10 @@ pub struct Epub {
 }
 
 impl Epub {
+    pub fn from_path(path: &Path) -> anyhow::Result<Self> {
+        EpubPreview::from_file(path)?.full()
+    }
+
     pub fn name(&self) -> &str {
         &self.metadata.title
     }
@@ -85,11 +89,11 @@ impl Manifest {
     // }
 
     fn item_idx(&self, path: &str) -> Option<usize> {
-        self.0.iter().position(|item| &item.path == path)
+        self.0.iter().position(|item| item.path == path)
     }
 
     fn item_idx_by_name(&self, name: &str) -> Option<usize> {
-        self.0.iter().position(|item| &item.name == name)
+        self.0.iter().position(|item| item.name == name)
     }
 }
 
@@ -103,7 +107,7 @@ impl Spine {
             .and_then(|name| archive.manifest.item_idx_by_name(name));
         let spine = Self(
             node.children()
-                .flat_map(|node| node.attribute("idref"))
+                .filter_map(|node| node.attribute("idref"))
                 .map(|name| archive.manifest.item_idx_by_name(name))
                 .collect::<Option<Vec<usize>>>()
                 .context("invalid spine")?,
@@ -112,7 +116,7 @@ impl Spine {
     }
 
     fn manifest_indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.0.iter().cloned()
+        self.0.iter().copied()
     }
 }
 
@@ -128,13 +132,6 @@ struct TocEntry {
 
 impl Toc {
     fn parse_v3(archive: &mut EpubArchive, spine: &Spine, toc_idx: usize) -> anyhow::Result<Self> {
-        // let toc_item = &manifest.0[toc_idx];
-        let data = archive.retrieve(toc_idx)?;
-        let xml = roxmltree::Document::parse(&data)?;
-        let mut elements = xml.root_element().children().filter(Node::is_element);
-        let _head = elements.next().context("toc missing head")?;
-        let body = elements.next().context("toc missing body")?;
-
         fn is_nav(n: &Node) -> bool {
             n.tag_name().name() == "nav"
                 && matches!(
@@ -142,6 +139,7 @@ impl Toc {
                     Some("toc")
                 )
         }
+
         fn find_nav<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
             for child in node.children() {
                 if is_nav(&child) {
@@ -153,6 +151,13 @@ impl Toc {
             }
             None
         }
+
+        // let toc_item = &manifest.0[toc_idx];
+        let data = archive.retrieve(toc_idx)?;
+        let xml = roxmltree::Document::parse(&data)?;
+        let mut elements = xml.root_element().children().filter(Node::is_element);
+        let _head = elements.next().context("toc missing head")?;
+        let body = elements.next().context("toc missing body")?;
         let toc_nav = find_nav(body).context("toc missing nav")?;
 
         let mut entries = Vec::new();
@@ -209,7 +214,6 @@ impl Toc {
         fn visit_navpoint(
             archive: &EpubArchive,
             spine: &Spine,
-            ncx: usize,
             entries: &mut Vec<TocEntry>,
             nav_point: Node,
         ) -> anyhow::Result<()> {
@@ -249,7 +253,7 @@ impl Toc {
             });
 
             for subpoint in elements {
-                visit_navpoint(archive, spine, ncx, entries, subpoint)?;
+                visit_navpoint(archive, spine, entries, subpoint)?;
             }
 
             Ok(())
@@ -261,7 +265,7 @@ impl Toc {
             .filter(Node::is_element)
             .skip_while(|n| n.tag_name().name() == "navInfo")
         {
-            visit_navpoint(archive, &spine, ncx_idx, &mut entries, nav_point)?;
+            visit_navpoint(archive, spine, &mut entries, nav_point)?;
         }
 
         // println!("{:#?}", entries);
@@ -295,19 +299,14 @@ impl Metadata {
         for child in node.children().filter(Node::is_element) {
             match child.tag_name().name() {
                 "identifier" => identifier = child.text().map(ToOwned::to_owned),
-                "title" => {
-                    // for attr in child.attributes() {
-                    //     println!("{:#?}", attr);
-                    // }
-                    title = child.text().map(ToOwned::to_owned)
-                }
+                "title" => title = child.text().map(ToOwned::to_owned),
                 "language" => language = child.text().map(ToOwned::to_owned),
                 "creator" => {
                     if let Some(raw) = child
                         .attribute(("http://www.idpf.org/2007/opf", "file-as"))
                         .or_else(|| child.text())
                     {
-                        for name in if raw.contains("&") {
+                        for name in if raw.contains('&') {
                             raw.split("&")
                         } else {
                             raw.split(" and ")
@@ -322,13 +321,13 @@ impl Metadata {
             }
         }
 
-        if let Some(title) = &title {
-            print!("{}", title);
-            if let Some(creator) = creators.first() {
-                print!(" by {}", creator);
-            }
-            println!();
-        }
+        // if let Some(title) = &title {
+        //     print!("{}", title);
+        //     if let Some(creator) = creators.first() {
+        //         print!(" by {}", creator);
+        //     }
+        //     println!();
+        // }
         Ok(Metadata {
             identifier: identifier.context("missing identifier")?,
             title: title.context("missing title")?,
@@ -500,10 +499,6 @@ impl EpubArchive {
         Ok(data)
     }
 
-    fn parse_hyperlink(&self, base: &str, href: &str) -> anyhow::Result<Url> {
-        Ok(Url::parse("epub:/")?.join(base)?.join(href)?)
-    }
-
     // fn uri_between_items(&self, from: usize, to: usize) -> anyhow::Result<Url> {
     //     let from = &self.manifest.0[from].path;
     //     let to = &self.manifest.0[to].path;
@@ -512,12 +507,12 @@ impl EpubArchive {
 
     fn item_uri(&self, idx: usize) -> anyhow::Result<Url> {
         let path = &self.manifest.0[idx].path;
-        Ok(Url::parse("epub:/")?.join(&path)?)
+        Ok(Url::parse("epub:/")?.join(path)?)
     }
 
     fn resolve_hyperlink(&self, item: usize, href: &str) -> anyhow::Result<usize> {
         let item = &self.manifest.0[item];
-        let url: Url = self.parse_hyperlink(&item.path, href)?;
+        let url: Url = parse_hyperlink(&item.path, href)?;
         self.manifest
             .item_idx(&url.path()[1..])
             .context("broken epub href")
@@ -538,8 +533,7 @@ impl simplecss::Element for XmlNode<'_, '_> {
     fn prev_sibling_element(&self) -> Option<Self> {
         self.0
             .prev_siblings()
-            .filter(|n| n.is_element())
-            .nth(0)
+            .find(|n| n.is_element())
             .map(XmlNode)
     }
 
@@ -548,10 +542,7 @@ impl simplecss::Element for XmlNode<'_, '_> {
     }
 
     fn attribute_matches(&self, local_name: &str, operator: simplecss::AttributeOperator) -> bool {
-        match self.0.attribute(local_name) {
-            Some(value) => operator.matches(value),
-            None => false,
-        }
+        self.0.attribute(local_name).map_or(false, |v| operator.matches(v))
     }
 
     fn pseudo_class_matches(&self, class: simplecss::PseudoClass) -> bool {
@@ -589,7 +580,7 @@ impl Epub {
                         _ => panic!(),
                     };
 
-                    data = data.replace(&needle, replacement);
+                    data = data.replace(needle, replacement);
                     roxmltree::Document::parse(&data).unwrap()
                 }
                 Err(e) => panic!("{e}"),
@@ -625,7 +616,7 @@ impl Epub {
 
             let mut styles = simplecss::StyleSheet::new();
             for style in raw_stylesheets.iter() {
-                styles.parse_more(&style);
+                styles.parse_more(style);
             }
 
             let mut rules = Vec::new();
@@ -647,6 +638,8 @@ impl Epub {
                     }
                 }
             }
+
+            // panic!("{:#?}", body.document().input_text());
 
             let cutoff = (i == end - 1).then_some(end_fragment).flatten();
             if let Some(fragment) = fragment.take() {
@@ -773,11 +766,19 @@ fn traverse_body(
 
     match node.tag_name().name() {
         // "a" if node.has_attribute("href") => _ = recurse(node, cb, styles, rules, style, end)?,
+        "p" | "div" | "blockquote" => {
+            recurse(node, cb, styles, rules, style, end)?;
+            cb(Content::Linebreak)
+        }
         "img" if node.has_attribute("src") => cb(Content::Image),
         "image" => cb(Content::Image),
         _ => _ = recurse(node, cb, styles, rules, style, end)?,
     }
     Ok(false)
+}
+
+fn parse_hyperlink(base: &str, href: &str) -> anyhow::Result<Url> {
+    Ok(Url::parse("epub:/")?.join(base)?.join(href)?)
 }
 
 // TODO save previews so can incremental search
@@ -792,7 +793,6 @@ pub struct Directory {
 
 impl SearchBackend for Directory {
     fn search(&self, title: &str) -> anyhow::Result<Option<Epub>> {
-        // println!("{}", self.dir.as_path().to_string_lossy());
         let parse = |entry: fs::DirEntry| -> anyhow::Result<Option<Epub>> {
             match entry
                 .path()
@@ -811,12 +811,11 @@ impl SearchBackend for Directory {
         };
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
-            // println!("{}", entry.path().as_path().to_string_lossy());
 
             match parse(entry) {
                 Ok(Some(doc)) => return Ok(Some(doc)),
                 Ok(None) => {}
-                Err(e) => eprintln!("failed to parse: {}", e),
+                Err(e) => eprintln!("failed to parse: {e}"),
             }
         }
         Ok(None)
@@ -824,6 +823,12 @@ impl SearchBackend for Directory {
 }
 
 impl Directory {
+    pub fn from_path(dir: PathBuf) -> anyhow::Result<Self> {
+        Ok(Self {
+            dir,
+        })
+    }
+
     pub fn from_home() -> anyhow::Result<Self> {
         Ok(Self {
             dir: ebook_directory()?,
@@ -860,7 +865,7 @@ impl Author {
         }
         let name = raw.to_lowercase();
         let name = name.replace(". ", " ");
-        let name = name.replace(".", " ");
+        let name = name.replace('.', " ");
         let name = name.trim();
         let comma_count = name.matches(',').count();
         let reversed = comma_count % 2 == 1;
@@ -899,7 +904,7 @@ impl Author {
             }
             buf
         }
-        Some(Author {
+        Some(Self {
             first: capitalise(given.trim()),
             middles: middles.map(str::trim).map(capitalise),
             surname: capitalise(surname.trim_matches(',').trim()),

@@ -1,31 +1,73 @@
+use std::{
+    num::NonZeroUsize,
+    path::PathBuf,
+};
+
 use anyhow::Context;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use typepub::{
-    epub::{Directory, SearchBackend},
+    epub::{Directory, SearchBackend, Epub},
     term::Display,
 };
 
 // TODO
 // - render styles
-// - convert empty newlines into virtual only
-// - book loading
-// - book select?
+// - nicer virtual styling
 // - chapter select
+// - book select maybe?
 // - progress saving
 // - scorescreen; wpm/acc display at end
 // - score annotations per paragraph
 // - window resize
+// - sixel images
 
 fn main() -> anyhow::Result<()> {
-    let book = Directory::from_home()?
-        .search("Kings")?
-        .context("book not found")?;
+    xflags::xflags! {
+        cmd typepub {
+            cmd path {
+                /// Path to book.
+                required path: PathBuf
+                /// Chapter to open.
+                required chapter: usize
+            }
+            cmd search {
+                /// Optional directory to search for books.
+                /// Defaults
+                ///     Unix:    `$HOME/books`
+                ///     Windows: `%HOMEPATH%\Documents\books`
+                optional library: PathBuf
+                /// Book name to search for. Case insensitive.
+                required search: String
+                /// Chapter to open.
+                required chapter: usize
+            }
+            /// Width of text view.
+            optional -w,--width width: NonZeroUsize
+        }
+    };
+
+    let args = Typepub::from_env()?;
+    let (book, chapter) = match args.subcommand {
+        TypepubCmd::Path(Path{path, chapter}) => {
+            (Epub::from_path(&path)?, chapter)
+        }
+        TypepubCmd::Search(Search{library, search, chapter}) => {
+            let book = library
+                .map_or_else(Directory::from_home, Directory::from_path)?
+                .search(&search)?
+                .context("book not found")?;
+            (book, chapter)
+        }
+    };
+
+    let width = args.width.and_then(|x| x.get().try_into().ok()).unwrap_or(80u16);
+
     println!("{}'s {}", book.author().unwrap(), book.name());
 
     let (term_w, term_h) = crossterm::terminal::size()?;
 
     let mut w = std::io::stdout();
-    let mut display = Display::new(book, 80, term_w, term_h);
+    let mut display = Display::new(book, chapter, width, term_w, term_h);
 
     display.enter(&mut w)?;
 
@@ -48,7 +90,7 @@ fn main() -> anyhow::Result<()> {
 fn next_key_event() -> anyhow::Result<KeyEvent> {
     loop {
         if let Ok(Event::Key(event)) = event::read() {
-            break Ok(event);
+            return Ok(event);
         }
     }
 }

@@ -17,8 +17,8 @@ use crate::{
 };
 
 // const PARAGRAPH_TERMINATOR: &str = "↵";
-const PARAGRAPH_TERMINATOR: &str = "¬";
-// const PARAGRAPH_TERMINATOR: &str = " ";
+// const PARAGRAPH_TERMINATOR: &str = "¬";
+const PARAGRAPH_TERMINATOR: &str = " ";
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Linebreak {
@@ -64,14 +64,13 @@ pub struct Display {
 }
 
 impl Display {
-    pub fn new(mut epub: Epub, width: u16, view_width: u16, view_height: u16) -> Self {
+    pub fn new(mut epub: Epub, chapter: usize, width: u16, view_width: u16, view_height: u16) -> Self {
         let width = width.min(view_width);
 
-        // TODO temp, move
+        // TODO more robust solution, this is all temporary
         let mut text = String::new();
-        epub.traverse(2, |content| match content {
+        epub.traverse(chapter, |content| match content {
             Content::Text(_, s) => {
-                // TODO: temp solution
                 const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', " ... ")];
                 let mut s = Cow::Borrowed(s);
                 for &(c, rep) in REPLACEMENTS {
@@ -79,12 +78,24 @@ impl Display {
                         s = s.replace(c, rep).into();
                     }
                 }
-                text.push_str(&s)
+                // println!("{}", s);
+                let s = s.trim();
+                if !s.is_empty() {
+                    text.push_str(s);
+                    text.push(' ');
+                }
             }
-            Content::Image => text.push_str("IMG"),
-            _ => {}
+            Content::Linebreak => {
+                while matches!(text.chars().last(), Some(c) if c.is_whitespace()) {
+                    text.pop();
+                }
+                text.push('\n');
+            }
+            Content::Image => text.push_str("img"),
+            Content::Title => todo!(),
         })
         .unwrap();
+        // panic!("{:#?}", text);
         let lines = Self::wrap_text(&text, width);
 
         Self {
@@ -103,7 +114,7 @@ impl Display {
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info: &std::panic::PanicInfo| {
             let _ = Self::cleanup(&mut std::io::stdout());
-            hook(info)
+            hook(info);
         }));
         self.full_render(w)?;
         Ok(())
@@ -132,7 +143,7 @@ impl Display {
         let mut char_sum = 0;
         let mut line_number = 0;
 
-        let wrapped = textwrap::wrap(&text, width as usize);
+        let wrapped = textwrap::wrap(text, width as usize);
         let mut it = wrapped.into_iter();
         let mut prev = it.next();
         while let (Some(line), Some(next)) = (prev, it.next()) {
@@ -176,7 +187,7 @@ impl Display {
         lines
     }
 
-    fn char_index_to_viewport_line(&self, idx: usize) -> usize {
+    fn char_index_to_virtual_line(&self, idx: usize) -> usize {
         self.lines
             .binary_search_by(|element| match element.start.chars.cmp(&idx) {
                 Ordering::Equal => Ordering::Less,
@@ -186,13 +197,13 @@ impl Display {
             .saturating_sub(1)
     }
 
-    fn to_viewport(&self, cursor: usize) -> (usize, usize) {
-        let y = self.char_index_to_viewport_line(cursor);
+    fn to_virtual(&self, cursor: usize) -> (u16, usize) {
+        let y = self.char_index_to_virtual_line(cursor);
         let x = cursor - self.lines[y].start.chars;
-        (x, y)
+        (x.try_into().unwrap(), y)
     }
 
-    fn viewport_line_str(&self, vl: &VirtualLine) -> &str {
+    fn virtual_line_str(&self, vl: &VirtualLine) -> &str {
         &self.backend.text()[vl.start.bytes..vl.end.bytes]
     }
 
@@ -210,25 +221,17 @@ impl Display {
         }
         .min(self.screen_size.1);
 
-        let line = self.char_index_to_viewport_line(self.backend.cursor().chars);
+        let line = self.char_index_to_virtual_line(self.backend.cursor().chars);
         let cursor_vln = self.lines[line].line;
         let top_of_screen_vln = cursor_vln as isize - self.anchor.1 as isize;
         let start_vln = (top_of_screen_vln + start_bound as isize).max(0) as usize;
         let end_vln = (top_of_screen_vln + end_bound as isize).max(0) as usize;
-        let offset = (start_vln as isize - top_of_screen_vln as isize).max(0) as usize;
+        let offset = (start_vln as isize - top_of_screen_vln).max(0) as usize;
 
         let heuristic = match start_bound <= self.anchor.1 {
             true => line.saturating_sub((self.anchor.1 - start_bound) as usize),
             false => line + (start_bound - self.anchor.1) as usize / 2,
         };
-
-        // if self.cursor.chars == 14 {
-        //     // panic!("{}, {}", start_bound, start_vln);
-        //     panic!("{}", self.viewport_line_str(&self.viewport_lines[line]));
-        //     // let (x, y) = self.to_viewport(self.cursor.chars);
-        //     // panic!("`{}`", self.viewport_line_str(&self.viewport_lines[y]));
-        //     // panic!("hurr");
-        // }
 
         self.lines
             .get(heuristic..)
@@ -259,9 +262,9 @@ impl Display {
 
     fn render_line(&self, w: &mut impl Write, line: &ScreenLine) -> anyhow::Result<()> {
         queue!(w, cursor::MoveTo(self.anchor.0, line.row))?;
-        w.write_all(self.viewport_line_str(line.line).as_bytes())?;
+        w.write_all(self.virtual_line_str(line.line).as_bytes())?;
         if line.line.linebreak == Linebreak::Existing {
-            write!(w, "{}", PARAGRAPH_TERMINATOR)?;
+            write!(w, "{PARAGRAPH_TERMINATOR}")?;
         }
         Ok(())
     }
@@ -278,28 +281,12 @@ impl Display {
             cursor::MoveTo(self.anchor.0 + start.chars as u16, line.row)
         )?;
         let slice_end = end_bytes.min(line.len_bytes());
-        let slice = &self.viewport_line_str(line.line)[start.bytes..slice_end];
-        // if self.cursor.chars == 13 {
-        //     panic!(
-        //         "{}, {}, {}, {}, {}, {}",
-        //         slice_end - start, // 0
-        //         start,             // 2
-        //         end_bytes,         // 3
-        //         line.len_bytes(),  // 2
-        //         slice_end,         // 2
-        //         slice.is_empty()
-        //     );
-        //     // panic!("{}", self.viewport_line_str(&line.viewport_line));
-        // }
-        // if self.viewport_line_str(line.viewport_line).contains(' ') {
-        //     let (x, y) = self.to_viewport(self.cursor.chars);
-        //     panic!("`{}`", self.viewport_line_str(&self.viewport_lines[y]));
-        // }
+        let slice = &self.virtual_line_str(line.line)[start.bytes..slice_end];
         if !slice.is_empty() {
             w.write_all(slice.as_bytes())?;
         }
         if line.line.linebreak == Linebreak::Existing && end_bytes > slice_end {
-            write!(w, "{}", PARAGRAPH_TERMINATOR)?;
+            write!(w, "{PARAGRAPH_TERMINATOR}")?;
         }
         Ok(())
     }
@@ -309,7 +296,7 @@ impl Display {
     }
 
     pub fn render(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
-        let (x, y) = self.to_viewport(self.backend.cursor().chars);
+        let (x, y) = self.to_virtual(self.backend.cursor().chars);
         let line_diff = self.line_difference(y);
         let Ok(lines_scrolled) = u16::try_from(line_diff.abs()) else {
             return self.full_render(w);
@@ -394,7 +381,7 @@ impl Display {
 
         queue!(
             w,
-            cursor::MoveTo(self.anchor.0 + x as u16, self.anchor.1),
+            cursor::MoveTo(self.anchor.0 + x, self.anchor.1),
             cursor::Show,
         )?;
 
@@ -405,7 +392,7 @@ impl Display {
     }
 
     fn full_render(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
-        let (x, _y) = self.to_viewport(self.backend.cursor().chars);
+        let (x, _y) = self.to_virtual(self.backend.cursor().chars);
 
         queue!(w, cursor::Hide, terminal::Clear(terminal::ClearType::All))?;
         for line in self.screen_lines(..) {
@@ -413,7 +400,7 @@ impl Display {
         }
         queue!(
             w,
-            cursor::MoveTo(self.anchor.0 + x as u16, self.anchor.1),
+            cursor::MoveTo(self.anchor.0 + x, self.anchor.1),
             cursor::Show,
         )?;
         w.flush()?;

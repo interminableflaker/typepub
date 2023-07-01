@@ -113,7 +113,7 @@ impl TextPosition {
 impl std::ops::Add<Self> for TextPosition {
     type Output = Self;
 
-    fn add(self, TextPosition { bytes, chars }: Self) -> Self::Output {
+    fn add(self, Self { bytes, chars }: Self) -> Self::Output {
         Self {
             bytes: self.bytes + bytes,
             chars: self.chars + chars,
@@ -124,7 +124,7 @@ impl std::ops::Add<Self> for TextPosition {
 impl std::ops::Sub<Self> for TextPosition {
     type Output = Self;
 
-    fn sub(self, TextPosition { bytes, chars }: Self) -> Self::Output {
+    fn sub(self, Self { bytes, chars }: Self) -> Self::Output {
         Self {
             bytes: self.bytes - bytes,
             chars: self.chars - chars,

@@ -36,17 +36,18 @@ fn main() -> anyhow::Result<()> {
                 required chapter: usize
             }
             cmd search {
-                /// Optional directory to search for books.
-                /// Defaults
-                ///     Unix:    `$HOME/books`
-                ///     Windows: `%HOMEPATH%\Documents\books`
-                optional library: PathBuf
                 /// Book name to search for. Case insensitive.
                 required search: String
                 /// Chapter to open.
                 required chapter: usize
+                /// Optional directory to search for books.
+                /// Defaults
+                ///     Unix:    `$HOME/books`
+                ///     Windows: `%HOMEPATH%\Documents\books`
+                optional -l,--library library: PathBuf
             }
-            /// Width of text view.
+            /// Width of text view, in characters.
+            /// Defaults to 80.
             optional -w,--width width: NonZeroUsize
         }
     };

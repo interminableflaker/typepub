@@ -3,7 +3,7 @@
 ## example usage
 - Open book at given path with viewport width maximum 120 characters.  
   `> typepub path "~/books/Alice's Adventures in Wonderland.epub" --width 120`
-- Open a book in default book directory with `hobbit` in its name, case insensitive.
+- Open a book in default book directory with `hobbit` in its name, case insensitive.  
   `> typepub search hobbit`
   
 ## help

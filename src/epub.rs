@@ -825,7 +825,7 @@ fn traverse_body(
         let text = node.text().context("invalid text node")?;
         let re = regex::Regex::new(r"\s+").unwrap();
         let text = re.replace_all(text, " ");
-        if !text.trim().is_empty() {
+        if !text.is_empty() {
             let content = Content::Text(style, &text);
             cb(content);
         }

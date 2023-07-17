@@ -301,7 +301,10 @@ impl ChapterDisplay {
         let mut text = String::new();
 
         book.traverse(chapter, |content| match content {
-            Content::Text(_, s) => {
+            Content::Text(_, mut s) => {
+                if text.chars().last() == Some('\n') {
+                    s = s.trim_start();
+                }
                 const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', "...")];
                 let mut s = Cow::Borrowed(s);
                 for &(c, rep) in REPLACEMENTS {

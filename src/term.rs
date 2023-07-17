@@ -3,6 +3,7 @@ use std::{
     cmp::Ordering,
     io::Write,
     ops::{Bound, RangeBounds},
+    sync::Arc,
 };
 
 use crossterm::{
@@ -12,13 +13,13 @@ use crossterm::{
 };
 
 use crate::{
-    backend::{Backend, TextPosition},
+    backend::{Backend, Len},
     epub::{Content, Epub},
 };
 
-// const PARAGRAPH_TERMINATOR: &str = "↵";
+const PARAGRAPH_TERMINATOR: &str = "↵";
 // const PARAGRAPH_TERMINATOR: &str = "¬";
-const PARAGRAPH_TERMINATOR: &str = " ";
+// const PARAGRAPH_TERMINATOR: &str = " ";
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Linebreak {
@@ -30,9 +31,9 @@ enum Linebreak {
 #[derive(Debug)]
 struct VirtualLine {
     line: usize,
-    start: TextPosition,
-    end: TextPosition,
-    separator_len: TextPosition,
+    start: Len,
+    end: Len,
+    separator_len: Len,
     linebreak: Linebreak,
 }
 
@@ -49,59 +50,36 @@ impl ScreenLine<'_> {
 }
 
 enum State {
-    // BookSelect,
-    ChapterSelect(Epub),
-    Chapter(Epub, usize),
+    ChapterSelect,
+    Chapter(ChapterDisplay),
+}
+
+struct Dimensions {
+    screen_size: (u16, u16),
+    anchor: (u16, u16),
+    width: u16,
 }
 
 pub struct Display {
+    dimensions: Arc<Dimensions>,
+    book: Epub,
+    chapter: usize,
     state: State,
-    backend: Backend,
-    screen_size: (u16, u16),
-    anchor: (u16, u16),
-    lines: Vec<VirtualLine>,
-    previous_line: usize,
 }
 
 impl Display {
-    pub fn new(mut epub: Epub, chapter: usize, width: u16, view_width: u16, view_height: u16) -> Self {
+    pub fn new(book: Epub, width: u16, view_width: u16, view_height: u16) -> Self {
         let width = width.min(view_width);
 
-        // TODO more robust solution, this is all temporary
-        let mut text = String::new();
-        epub.traverse(chapter, |content| match content {
-            Content::Text(_, s) => {
-                const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', " ... ")];
-                let mut s = Cow::Borrowed(s);
-                for &(c, rep) in REPLACEMENTS {
-                    if s.contains(c) {
-                        s = s.replace(c, rep).into();
-                    }
-                }
-                // println!("{}", s);
-                text.push_str(&s);
-            }
-            Content::Linebreak => {
-                while matches!(text.chars().last(), Some(c) if c.is_whitespace()) {
-                    text.pop();
-                }
-                text.push('\n');
-            }
-            Content::Image => text.push_str("img"),
-            Content::Title => todo!(),
-        })
-        .unwrap();
-        let text = text.trim().to_owned();
-        // panic!("{:#?}", text);
-        let lines = Self::wrap_text(&text, width);
-
         Self {
-            state: State::ChapterSelect(epub),
-            backend: Backend::new(text),
-            screen_size: (view_width, view_height),
-            anchor: (view_width / 2 - width / 2, view_height / 2),
-            previous_line: 0,
-            lines,
+            state: State::ChapterSelect,
+            book,
+            chapter: 0,
+            dimensions: Arc::new(Dimensions {
+                screen_size: (view_width, view_height),
+                anchor: (view_width / 2 - width / 2, view_height / 2),
+                width,
+            }),
         }
     }
 
@@ -134,6 +112,228 @@ impl Display {
         Ok(())
     }
 
+    pub fn render(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
+        match &mut self.state {
+            State::ChapterSelect { .. } => self.full_render(w)?,
+            State::Chapter(display) => {
+                if display.render_chapter(w)? {
+                    self.full_render(w)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn full_render(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
+        match &mut self.state {
+            State::ChapterSelect => {
+                queue!(w, cursor::Hide, terminal::Clear(terminal::ClearType::All))?;
+
+                let chapter = self.book.chapters().nth(self.chapter).unwrap();
+                let depth_offset = 2 * chapter.depth();
+                let wrap_at = self.content_width() as usize - depth_offset;
+                let wrapped = textwrap::wrap(chapter.name(), wrap_at);
+                let line = self.middle_row() - (wrapped.len() as u16 - 1) / 2;
+                queue!(
+                    w,
+                    cursor::MoveTo(self.content_starting_col() - 2, self.middle_row())
+                )?;
+                w.write_all(b">")?;
+                for (i, wrap) in wrapped.iter().enumerate() {
+                    queue!(
+                        w,
+                        cursor::MoveTo(
+                            self.content_starting_col() + depth_offset as u16,
+                            line + i as u16
+                        )
+                    )?;
+                    w.write_all(wrap.as_bytes())?;
+                }
+
+                let mut above = line - 2;
+                let mut below = line + wrapped.len() as u16 + 1;
+
+                'outer: for chapter in self
+                    .book
+                    .chapters()
+                    .rev()
+                    .skip(self.book.chapter_count() - self.chapter)
+                {
+                    let depth_offset = 2 * chapter.depth();
+                    let wrap_at = self.content_width() as usize - depth_offset;
+                    let wrapped = textwrap::wrap(chapter.name(), wrap_at);
+
+                    for (i, wrap) in wrapped.iter().rev().enumerate() {
+                        queue!(
+                            w,
+                            cursor::MoveTo(
+                                self.content_starting_col() + depth_offset as u16,
+                                above - i as u16
+                            )
+                        )?;
+                        w.write_all(wrap.as_bytes())?;
+                        if above <= 1 + i as u16 {
+                            break 'outer;
+                        }
+                    }
+
+                    above -= u16::try_from(wrapped.len()).unwrap() + 1;
+                }
+                'outer: for chapter in self.book.chapters().skip(self.chapter + 1) {
+                    let depth_offset = 2 * chapter.depth();
+                    let wrap_at = self.content_width() as usize - depth_offset;
+                    let wrapped = textwrap::wrap(chapter.name(), wrap_at);
+
+                    for (i, wrap) in wrapped.iter().enumerate() {
+                        if below + i as u16 >= self.screen_height() {
+                            break 'outer;
+                        }
+                        queue!(
+                            w,
+                            cursor::MoveTo(
+                                self.content_starting_col() + depth_offset as u16,
+                                below + i as u16
+                            )
+                        )?;
+                        w.write_all(wrap.as_bytes())?;
+                    }
+
+                    below += u16::try_from(wrapped.len()).unwrap() + 1;
+                }
+                w.flush()?;
+                Ok(())
+            }
+            State::Chapter(display) => display.full_render_chapter(w),
+        }
+    }
+
+    pub fn handle_input(&mut self, event: KeyEvent) -> anyhow::Result<bool> {
+        if let KeyEvent {
+            code: KeyCode::Esc, ..
+        } = &event
+        {
+            match &mut self.state {
+                State::ChapterSelect => return Ok(true),
+                State::Chapter(..) => {
+                    self.state = State::ChapterSelect;
+                    return Ok(false);
+                }
+            }
+        }
+        match &mut self.state {
+            State::ChapterSelect => match event {
+                KeyEvent {
+                    code: KeyCode::Up | KeyCode::Char('k'),
+                    ..
+                } => self.chapter = self.chapter.saturating_sub(1),
+                KeyEvent {
+                    code: KeyCode::Down | KeyCode::Char('j'),
+                    ..
+                } => {
+                    self.chapter =
+                        (self.chapter + 1).min(self.book.chapter_count().saturating_sub(1))
+                }
+                KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                } => {
+                    self.state = State::Chapter(ChapterDisplay::enter(
+                        Arc::clone(&self.dimensions),
+                        &mut self.book,
+                        self.chapter,
+                    ));
+                }
+                _ => {}
+            },
+            State::Chapter(display) => display.handle_input(event)?,
+        }
+        Ok(false)
+    }
+}
+
+struct ChapterDisplay {
+    dimensions: Arc<Dimensions>,
+    backend: Backend,
+    lines: Vec<VirtualLine>,
+    previous_line: usize,
+    needs_full_render: bool,
+}
+
+trait DisplayState {
+    fn dimensions(&self) -> &Dimensions;
+
+    fn content_width(&self) -> u16 {
+        self.dimensions().width
+    }
+
+    fn screen_width(&self) -> u16 {
+        self.dimensions().screen_size.0
+    }
+
+    fn screen_height(&self) -> u16 {
+        self.dimensions().screen_size.1
+    }
+
+    fn content_starting_col(&self) -> u16 {
+        self.dimensions().anchor.0
+    }
+
+    fn middle_row(&self) -> u16 {
+        self.dimensions().anchor.1
+    }
+}
+
+impl DisplayState for Display {
+    fn dimensions(&self) -> &Dimensions {
+        &self.dimensions
+    }
+}
+
+impl DisplayState for ChapterDisplay {
+    fn dimensions(&self) -> &Dimensions {
+        &self.dimensions
+    }
+}
+
+impl ChapterDisplay {
+    pub fn enter(dimensions: Arc<Dimensions>, book: &mut Epub, chapter: usize) -> Self {
+        // TODO more robust solution, this is all temporary
+        let mut text = String::new();
+        book.traverse(chapter, |content| match content {
+            Content::Text(_, s) => {
+                const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', " ... ")];
+                let mut s = Cow::Borrowed(s);
+                for &(c, rep) in REPLACEMENTS {
+                    if s.contains(c) {
+                        s = s.replace(c, rep).into();
+                    }
+                }
+                // println!("{}", s);
+                text.push_str(&s);
+            }
+            Content::Linebreak => {
+                while matches!(text.chars().last(), Some(c) if c.is_whitespace()) {
+                    text.pop();
+                }
+                text.push('\n');
+            }
+            Content::Image => text.push_str("img"),
+            Content::Title => todo!(),
+        })
+        .unwrap();
+        let text = text.trim().to_owned();
+        // panic!("{:#?}", text);
+        let lines = Self::wrap_text(&text, dimensions.width);
+
+        Self {
+            dimensions,
+            backend: Backend::new(text),
+            lines,
+            previous_line: 0,
+            needs_full_render: true,
+        }
+    }
+
     fn wrap_text(text: &str, width: u16) -> Vec<VirtualLine> {
         let mut lines = vec![];
         let mut byte_sum = 0;
@@ -161,12 +361,12 @@ impl Display {
                         Linebreak::Wrapped
                     }
                 };
-                (TextPosition::new(len, separator.chars().count()), kind)
+                (Len::new(len, separator.chars().count()), kind)
             };
             lines.push(VirtualLine {
                 line: this_line,
-                start: TextPosition::new(byte_sum, char_sum),
-                end: TextPosition::new(end, char_sum + line_chars),
+                start: Len::new(byte_sum, char_sum),
+                end: Len::new(end, char_sum + line_chars),
                 separator_len,
                 linebreak,
             });
@@ -176,9 +376,9 @@ impl Display {
         }
         lines.push(VirtualLine {
             line: line_number,
-            start: TextPosition::new(byte_sum, char_sum),
-            end: TextPosition::new(text.len(), char_sum + text[byte_sum..].chars().count()),
-            separator_len: TextPosition::new(0, 0),
+            start: Len::new(byte_sum, char_sum),
+            end: Len::new(text.len(), char_sum + text[byte_sum..].chars().count()),
+            separator_len: Len::new(0, 0),
             linebreak: Linebreak::Eof,
         });
         lines
@@ -210,24 +410,24 @@ impl Display {
             Bound::Excluded(&l) => l + 1,
             Bound::Unbounded => 0,
         }
-        .min(self.screen_size.1 - 1);
+        .min(self.screen_height() - 1);
         let end_bound = match range.end_bound() {
             Bound::Included(&l) => l + 1,
             Bound::Excluded(&l) => l,
-            Bound::Unbounded => self.screen_size.1,
+            Bound::Unbounded => self.screen_height(),
         }
-        .min(self.screen_size.1);
+        .min(self.screen_height());
 
         let line = self.char_index_to_virtual_line(self.backend.cursor().chars);
         let cursor_vln = self.lines[line].line;
-        let top_of_screen_vln = cursor_vln as isize - self.anchor.1 as isize;
+        let top_of_screen_vln = cursor_vln as isize - self.middle_row() as isize;
         let start_vln = (top_of_screen_vln + start_bound as isize).max(0) as usize;
         let end_vln = (top_of_screen_vln + end_bound as isize).max(0) as usize;
         let offset = (start_vln as isize - top_of_screen_vln).max(0) as usize;
 
-        let heuristic = match start_bound <= self.anchor.1 {
-            true => line.saturating_sub((self.anchor.1 - start_bound) as usize),
-            false => line + (start_bound - self.anchor.1) as usize / 2,
+        let heuristic = match start_bound <= self.middle_row() {
+            true => line.saturating_sub((self.middle_row() - start_bound) as usize),
+            false => line + (start_bound - self.middle_row()) as usize / 2,
         };
 
         self.lines
@@ -258,7 +458,7 @@ impl Display {
     }
 
     fn render_line(&self, w: &mut impl Write, line: &ScreenLine) -> anyhow::Result<()> {
-        queue!(w, cursor::MoveTo(self.anchor.0, line.row))?;
+        queue!(w, cursor::MoveTo(self.content_starting_col(), line.row))?;
         w.write_all(self.virtual_line_str(line.line).as_bytes())?;
         if line.line.linebreak == Linebreak::Existing {
             write!(w, "{PARAGRAPH_TERMINATOR}")?;
@@ -270,12 +470,12 @@ impl Display {
         &self,
         w: &mut impl Write,
         line: &ScreenLine,
-        start: TextPosition,
+        start: Len,
         end_bytes: usize,
     ) -> anyhow::Result<()> {
         queue!(
             w,
-            cursor::MoveTo(self.anchor.0 + start.chars as u16, line.row)
+            cursor::MoveTo(self.content_starting_col() + start.chars as u16, line.row)
         )?;
         let slice_end = end_bytes.min(line.len_bytes());
         let slice = &self.virtual_line_str(line.line)[start.bytes..slice_end];
@@ -292,11 +492,15 @@ impl Display {
         self.lines[current_line].line as isize - self.lines[self.previous_line].line as isize
     }
 
-    pub fn render(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
+    // true -> needs full render
+    pub fn render_chapter(&mut self, w: &mut impl Write) -> anyhow::Result<bool> {
+        if self.needs_full_render {
+            return Ok(true);
+        }
         let (x, y) = self.to_virtual(self.backend.cursor().chars);
         let line_diff = self.line_difference(y);
         let Ok(lines_scrolled) = u16::try_from(line_diff.abs()) else {
-            return self.full_render(w);
+            return Ok(true);
         };
 
         queue!(w, cursor::Hide)?;
@@ -304,7 +508,7 @@ impl Display {
         if lines_scrolled > 0 {
             let range = if y > self.previous_line {
                 queue!(w, terminal::ScrollUp(lines_scrolled))?;
-                let bottom = self.screen_size.1;
+                let bottom = self.screen_height();
                 bottom - lines_scrolled..bottom
             } else {
                 queue!(w, terminal::ScrollDown(lines_scrolled))?;
@@ -334,6 +538,7 @@ impl Display {
         // }
 
         // TODO: too much complexity
+        // error highlighting
         let cursor_pos = self.backend.cursor();
         let last_cursor_pos = self.backend.last_cursor_position();
         if let Some(errors) = if cursor_pos.chars > last_cursor_pos.chars {
@@ -347,8 +552,8 @@ impl Display {
             Some(self.backend.backspaced_errors())
         } {
             let range = match y.cmp(&self.previous_line) {
-                Ordering::Greater => self.anchor.1 - lines_scrolled..=self.anchor.1,
-                _ => self.anchor.1..=self.anchor.1 + lines_scrolled,
+                Ordering::Greater => self.middle_row() - lines_scrolled..=self.middle_row(),
+                _ => self.middle_row()..=self.middle_row() + lines_scrolled,
             };
             let mut cur = 0;
             'outer: for line in self.screen_lines(range) {
@@ -378,17 +583,17 @@ impl Display {
 
         queue!(
             w,
-            cursor::MoveTo(self.anchor.0 + x, self.anchor.1),
+            cursor::MoveTo(self.content_starting_col() + x, self.middle_row()),
             cursor::Show,
         )?;
 
         w.flush()?;
         self.previous_line = y;
         self.backend.clear_per_update_data();
-        Ok(())
+        Ok(false)
     }
 
-    fn full_render(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
+    fn full_render_chapter(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
         let (x, _y) = self.to_virtual(self.backend.cursor().chars);
 
         queue!(w, cursor::Hide, terminal::Clear(terminal::ClearType::All))?;
@@ -397,10 +602,11 @@ impl Display {
         }
         queue!(
             w,
-            cursor::MoveTo(self.anchor.0 + x, self.anchor.1),
+            cursor::MoveTo(self.content_starting_col() + x, self.middle_row()),
             cursor::Show,
         )?;
         w.flush()?;
+        self.needs_full_render = false;
         Ok(())
     }
 

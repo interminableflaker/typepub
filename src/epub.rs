@@ -44,6 +44,16 @@ impl Epub {
     pub fn author(&self) -> Option<&Author> {
         self.metadata.creators.first()
     }
+
+    pub fn chapters(
+        &self,
+    ) -> impl Iterator<Item = &TocEntry> + DoubleEndedIterator + ExactSizeIterator {
+        self.toc.0.iter()
+    }
+
+    pub fn chapter_count(&self) -> usize {
+        self.toc.0.len()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,10 +134,21 @@ impl Spine {
 struct Toc(Vec<TocEntry>);
 
 #[derive(Debug)]
-struct TocEntry {
+pub struct TocEntry {
     name: String,
     fragment: Option<String>,
     idx: usize,
+    depth: usize,
+}
+
+impl TocEntry {
+    pub fn name(&self) -> &str {
+        &*self.name
+    }
+
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
 }
 
 impl Toc {
@@ -152,7 +173,6 @@ impl Toc {
             None
         }
 
-        // let toc_item = &manifest.0[toc_idx];
         let data = archive.retrieve(toc_idx)?;
         let xml = roxmltree::Document::parse(&data)?;
         let mut elements = xml.root_element().children().filter(Node::is_element);
@@ -164,44 +184,68 @@ impl Toc {
         let list = toc_nav
             .children()
             .filter(Node::is_element)
-            .find(|n| n.tag_name().name() == "ol")
+            .skip(1)
+            .next()
+            // .find(|n| n.tag_name().name() == "ol")
             .context("toc missing navlist")?;
         // println!("{:?}", list.document());
         let toc_uri = archive.item_uri(toc_idx)?;
-        for item in list.children().filter(Node::is_element) {
-            let element = item.first_element_child().context("invalid toc item")?;
-            let href = element.attribute("href").context("toc item missing href")?;
-            let fragment = href.rsplit_once('#').map(|(_, frag)| frag.to_owned());
-            let manifest_idx = archive
-                .items()
-                .enumerate()
-                .position(|(idx, _)| {
-                    let item_uri = archive.item_uri(idx);
-                    let href = toc_uri.join(href);
-                    if let (Ok(item_uri), Ok(href)) = (item_uri, href) {
-                        item_uri.path() == href.path()
-                    } else {
-                        false
-                    }
-                })
-                .context("toc reference missing in manifest")?;
-            let idx = spine
-                .manifest_indices()
-                .position(|i| i == manifest_idx)
-                .context("toc reference missing in spine")?;
-            let name = element.text().context("toc item missing name")?.to_owned();
-            entries.push(TocEntry {
-                name,
-                fragment,
-                idx,
-            });
+
+        fn visit_entries(
+            archive: &EpubArchive,
+            spine: &Spine,
+            toc_uri: &Url,
+            entries: &mut Vec<TocEntry>,
+            list: Node,
+            depth: usize,
+        ) -> anyhow::Result<()> {
+            for item in list.children().filter(Node::is_element) {
+                let mut elements = item.children().filter(Node::is_element);
+                let element = elements.next().context("invalid toc item")?;
+                let href = element.attribute("href").context("toc item missing href")?;
+                let fragment = href.rsplit_once('#').map(|(_, frag)| frag.to_owned());
+                let manifest_idx = archive
+                    .items()
+                    .enumerate()
+                    .position(|(idx, _)| {
+                        let item_uri = archive.item_uri(idx);
+                        let href = toc_uri.join(href);
+                        if let (Ok(item_uri), Ok(href)) = (item_uri, href) {
+                            item_uri.path() == href.path()
+                        } else {
+                            false
+                        }
+                    })
+                    .context("toc reference missing in manifest")?;
+                let idx = spine
+                    .manifest_indices()
+                    .position(|i| i == manifest_idx)
+                    .context("toc reference missing in spine")?;
+                let name = element.text().context("toc item missing name")?.to_owned();
+
+                entries.push(TocEntry {
+                    name,
+                    fragment,
+                    idx,
+                    depth,
+                });
+
+                if let Some(list) = elements.next().filter(|e| e.has_tag_name("ol")) {
+                    visit_entries(archive, spine, toc_uri, entries, list, depth + 1)?;
+                }
+            }
+
+            Ok(())
         }
+
+        visit_entries(archive, spine, &toc_uri, &mut entries, list, 0)?;
 
         Ok(Toc(entries))
     }
 
     fn parse_v2(archive: &mut EpubArchive, spine: &Spine, ncx_idx: usize) -> anyhow::Result<Self> {
         let data = archive.retrieve(ncx_idx)?;
+        // panic!("{}", data);
         let xml = roxmltree::Document::parse(&data).unwrap();
 
         let nav_map = xml
@@ -217,9 +261,14 @@ impl Toc {
             entries: &mut Vec<TocEntry>,
             play_order: &mut Vec<usize>,
             nav_point: Node,
+            depth: usize,
         ) -> anyhow::Result<()> {
             // let id = nav_point.attribute("id").unwrap();
-            if let Some(idx) = nav_point.attribute("playOrder").map(str::parse).transpose()? {
+            if let Some(idx) = nav_point
+                .attribute("playOrder")
+                .map(str::parse)
+                .transpose()?
+            {
                 play_order.push(idx);
             }
 
@@ -254,10 +303,11 @@ impl Toc {
                 name,
                 fragment,
                 idx,
+                depth,
             });
 
             for subpoint in elements {
-                visit_navpoint(archive, spine, entries, play_order, subpoint)?;
+                visit_navpoint(archive, spine, entries, play_order, subpoint, depth + 1)?;
             }
 
             Ok(())
@@ -270,11 +320,12 @@ impl Toc {
             .filter(Node::is_element)
             .skip_while(|n| n.tag_name().name() == "navInfo")
         {
-            visit_navpoint(archive, spine, &mut entries, &mut play_order, nav_point)?;
+            visit_navpoint(archive, spine, &mut entries, &mut play_order, nav_point, 0)?;
         }
         if !play_order.is_empty() {
             assert_eq!(
-                entries.len(), play_order.len(),
+                entries.len(),
+                play_order.len(),
                 "if one ncx entry has a play order attribute, they all should",
             );
             let mut zipped = play_order.into_iter().zip(entries).collect::<Vec<_>>();
@@ -545,10 +596,7 @@ impl simplecss::Element for XmlNode<'_, '_> {
     }
 
     fn prev_sibling_element(&self) -> Option<Self> {
-        self.0
-            .prev_siblings()
-            .find(|n| n.is_element())
-            .map(XmlNode)
+        self.0.prev_siblings().find(|n| n.is_element()).map(XmlNode)
     }
 
     fn has_local_name(&self, local_name: &str) -> bool {
@@ -556,7 +604,9 @@ impl simplecss::Element for XmlNode<'_, '_> {
     }
 
     fn attribute_matches(&self, local_name: &str, operator: simplecss::AttributeOperator) -> bool {
-        self.0.attribute(local_name).map_or(false, |v| operator.matches(v))
+        self.0
+            .attribute(local_name)
+            .map_or(false, |v| operator.matches(v))
     }
 
     fn pseudo_class_matches(&self, class: simplecss::PseudoClass) -> bool {
@@ -581,8 +631,11 @@ impl Epub {
             None => (self.toc.0.last().unwrap().idx + 1, None),
         };
 
+        // panic!("{:?}, {:?}, {:?}, {:?}", start, fragment, end, end_fragment);
+
         for (i, item_idx) in (start..end).map(|i| (i, self.spine.0[i])) {
             let mut data = self.archive.retrieve(item_idx)?;
+            // panic!("{}", data);
 
             let xml = match roxmltree::Document::parse(&data) {
                 Ok(x) => x,
@@ -632,6 +685,8 @@ impl Epub {
             for style in raw_stylesheets.iter() {
                 styles.parse_more(style);
             }
+
+            // panic!("{:#?}", styles.rules);
 
             let mut rules = Vec::new();
 
@@ -840,9 +895,7 @@ impl SearchBackend for Directory {
 
 impl Directory {
     pub fn from_path(dir: PathBuf) -> anyhow::Result<Self> {
-        Ok(Self {
-            dir,
-        })
+        Ok(Self { dir })
     }
 
     pub fn from_home() -> anyhow::Result<Self> {

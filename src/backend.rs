@@ -1,10 +1,10 @@
 pub struct Backend {
     text: String,
     typed: String,
-    cursor: TextPosition,
-    cursor_prev: TextPosition,
-    errors: Vec<TextPosition>,
-    deleted_errors: Vec<TextPosition>,
+    cursor: Len,
+    cursor_prev: Len,
+    errors: Vec<Len>,
+    deleted_errors: Vec<Len>,
 }
 
 impl Backend {
@@ -12,8 +12,8 @@ impl Backend {
         Self {
             text,
             typed: String::new(),
-            cursor: TextPosition::new(0, 0),
-            cursor_prev: TextPosition::new(0, 0),
+            cursor: Len::new(0, 0),
+            cursor_prev: Len::new(0, 0),
             errors: Vec::new(),
             deleted_errors: Vec::new(),
         }
@@ -23,19 +23,19 @@ impl Backend {
         &self.text
     }
 
-    pub fn cursor(&self) -> TextPosition {
+    pub fn cursor(&self) -> Len {
         self.cursor
     }
 
-    pub fn last_cursor_position(&self) -> TextPosition {
+    pub fn last_cursor_position(&self) -> Len {
         self.cursor_prev
     }
 
-    pub fn errors(&self) -> &[TextPosition] {
+    pub fn errors(&self) -> &[Len] {
         &self.errors
     }
 
-    pub fn backspaced_errors(&self) -> &[TextPosition] {
+    pub fn backspaced_errors(&self) -> &[Len] {
         &self.deleted_errors
     }
 
@@ -61,12 +61,12 @@ impl Backend {
             return;
         };
         let text = self.text[..self.cursor.bytes].chars().last().unwrap();
-        self.delete_backwards_impl(text.len_utf8(), 1, typed.len_utf8());
+        self.delete_backwards_impl(Len::new(text.len_utf8(), 1), Len::new(typed.len_utf8(), 1));
     }
 
     pub fn delete_word_backwards(&mut self) {
         let mut found_nonwhitespace = false;
-        let [typed_bytes, _typed_chars, text_bytes, text_chars]: [usize; 4] = self
+        let [typed, text] = self
             .typed
             .chars()
             .rev()
@@ -76,16 +76,16 @@ impl Backend {
                 !(found_nonwhitespace && is_ws)
             })
             .zip(self.text[..self.cursor.bytes].chars().rev())
-            .map(|(a, b)| [a.len_utf8(), 1, b.len_utf8(), 1])
-            .fold([0; 4], |acc, x| [0, 1, 2, 3].map(|i| acc[i] + x[i]));
-        self.delete_backwards_impl(text_bytes, text_chars, typed_bytes);
+            .map(|(a, b)| [Len::new(a.len_utf8(), 1), Len::new(b.len_utf8(), 1)])
+            .fold([Len::default(); 2], |acc, x| [0, 1].map(|i| acc[i] + x[i]));
+        self.delete_backwards_impl(text, typed);
     }
 
-    fn delete_backwards_impl(&mut self, len_bytes: usize, len_chars: usize, typed_bytes: usize) {
-        self.typed.truncate(self.typed.len() - typed_bytes);
+    fn delete_backwards_impl(&mut self, len: Len, typed: Len) {
+        self.typed.truncate(self.typed.len() - typed.bytes);
         self.cursor_prev = self.cursor;
-        self.cursor.chars -= len_chars;
-        self.cursor.bytes -= len_bytes;
+        self.cursor -= len;
+
         // TODO: binary search this
         if let Some(first_deleted_error) = self
             .errors
@@ -98,19 +98,19 @@ impl Backend {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct TextPosition {
+#[derive(Debug, Copy, Clone, Default)]
+pub struct Len {
     pub bytes: usize,
     pub chars: usize,
 }
 
-impl TextPosition {
+impl Len {
     pub fn new(bytes: usize, chars: usize) -> Self {
         Self { bytes, chars }
     }
 }
 
-impl std::ops::Add<Self> for TextPosition {
+impl std::ops::Add<Self> for Len {
     type Output = Self;
 
     fn add(self, Self { bytes, chars }: Self) -> Self::Output {
@@ -121,7 +121,14 @@ impl std::ops::Add<Self> for TextPosition {
     }
 }
 
-impl std::ops::Sub<Self> for TextPosition {
+impl std::ops::AddAssign<Self> for Len {
+    fn add_assign(&mut self, rhs: Self) {
+        self.bytes += rhs.bytes;
+        self.chars += rhs.chars;
+    }
+}
+
+impl std::ops::Sub<Self> for Len {
     type Output = Self;
 
     fn sub(self, Self { bytes, chars }: Self) -> Self::Output {
@@ -129,6 +136,13 @@ impl std::ops::Sub<Self> for TextPosition {
             bytes: self.bytes - bytes,
             chars: self.chars - chars,
         }
+    }
+}
+
+impl std::ops::SubAssign<Self> for Len {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.bytes -= rhs.bytes;
+        self.chars -= rhs.chars;
     }
 }
 

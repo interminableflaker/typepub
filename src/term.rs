@@ -302,7 +302,7 @@ impl ChapterDisplay {
 
         book.traverse(chapter, |content| match content {
             Content::Text(_, s) => {
-                const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', " ... ")];
+                const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', "...")];
                 let mut s = Cow::Borrowed(s);
                 for &(c, rep) in REPLACEMENTS {
                     if s.contains(c) {

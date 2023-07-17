@@ -322,16 +322,16 @@ impl Toc {
         {
             visit_navpoint(archive, spine, &mut entries, &mut play_order, nav_point, 0)?;
         }
-        if !play_order.is_empty() {
-            assert_eq!(
-                entries.len(),
-                play_order.len(),
-                "if one ncx entry has a play order attribute, they all should",
-            );
-            let mut zipped = play_order.into_iter().zip(entries).collect::<Vec<_>>();
-            zipped.sort_by_key(|(play_order, _)| *play_order);
-            entries = zipped.into_iter().map(|(_, e)| e).collect();
-        }
+        // if !play_order.is_empty() {
+        //     assert_eq!(
+        //         entries.len(),
+        //         play_order.len(),
+        //         "if one ncx entry has a play order attribute, they all should",
+        //     );
+        //     let mut zipped = play_order.into_iter().zip(entries).collect::<Vec<_>>();
+        //     zipped.sort_by_key(|(play_order, _)| *play_order);
+        //     entries = zipped.into_iter().map(|(_, e)| e).collect();
+        // }
 
         // panic!("{:#?}", entries);
 
@@ -623,108 +623,109 @@ impl Epub {
         entry: usize,
         mut cb: impl FnMut(Content<'_>),
     ) -> anyhow::Result<(&str, &str)> {
-        let mut fragment = self.toc.0[entry].fragment.as_deref();
-        let start = self.toc.0[entry].idx;
-        let (end, end_fragment) = match self.toc.0.get(entry + 1) {
-            Some(entry) if entry.fragment.is_some() => (entry.idx + 1, entry.fragment.as_deref()),
-            Some(entry) => (entry.idx, None),
-            None => (self.toc.0.last().unwrap().idx + 1, None),
-        };
+        // let mut fragment = self.toc.0[entry].fragment.as_deref();
+        // panic!("{:?}", fragment);
+        // let start = self.toc.0[entry].idx;
+        // let (end, end_fragment) = match self.toc.0.get(entry + 1) {
+        //     Some(entry) if entry.fragment.is_some() => (entry.idx + 1, entry.fragment.as_deref()),
+        //     Some(entry) => (entry.idx, None),
+        //     None => (self.toc.0.last().unwrap().idx + 1, None),
+        // };
 
         // panic!("{:?}, {:?}, {:?}, {:?}", start, fragment, end, end_fragment);
+        let item_idx = self.spine.0[self.toc.0[entry].idx];
 
-        for (i, item_idx) in (start..end).map(|i| (i, self.spine.0[i])) {
-            let mut data = self.archive.retrieve(item_idx)?;
-            // panic!("{}", data);
+        // for (i, item_idx) in (start..end).map(|i| (i, self.spine.0[i])) {
+        let mut data = self.archive.retrieve(item_idx)?;
 
-            let xml = match roxmltree::Document::parse(&data) {
-                Ok(x) => x,
-                Err(roxmltree::Error::UnknownEntityReference(name, _)) => {
-                    // TODO: may have to do this recursively, if there are more
-                    //       entities looking to cause trouble
-                    let (needle, replacement) = match name.as_ref() {
-                        "nbsp" => ("&nbsp;", " "),
-                        _ => panic!(),
-                    };
+        let xml = match roxmltree::Document::parse(&data) {
+            Ok(x) => x,
+            Err(roxmltree::Error::UnknownEntityReference(name, _)) => {
+                // TODO: may have to do this recursively, if there are more
+                //       entities looking to cause trouble
+                let (needle, replacement) = match name.as_ref() {
+                    "nbsp" => ("&nbsp;", " "),
+                    _ => panic!(),
+                };
 
-                    data = data.replace(needle, replacement);
-                    roxmltree::Document::parse(&data).unwrap()
+                data = data.replace(needle, replacement);
+                roxmltree::Document::parse(&data).unwrap()
+            }
+            Err(e) => panic!("{e}"),
+        };
+
+        let (head, body) = {
+            let mut containers = xml
+                .root_element()
+                .children()
+                .filter(roxmltree::Node::is_element);
+            (
+                containers.next().context("missing head")?,
+                containers.next().context("missing body")?,
+            )
+        };
+
+        let mut raw_stylesheets = Vec::new();
+        for node in head.children().filter(Node::is_element) {
+            match node.tag_name().name() {
+                "link" if node.attribute("rel") == Some("stylesheet") => {
+                    let href = node.attribute("href").unwrap();
+                    let css_item = self.archive.resolve_hyperlink(item_idx, href)?;
+                    let css = self.archive.retrieve_idx(css_item)?;
+                    raw_stylesheets.push(css);
                 }
-                Err(e) => panic!("{e}"),
-            };
+                "style" if matches!(node.attribute("type"), Some("text/css") | None) => {
+                    raw_stylesheets.push(node.text().context("style tag without text")?.to_owned());
+                }
+                _ => {}
+            }
+        }
 
-            let (head, body) = {
-                let mut containers = xml
-                    .root_element()
-                    .children()
-                    .filter(roxmltree::Node::is_element);
-                (
-                    containers.next().context("missing head")?,
-                    containers.next().context("missing body")?,
-                )
-            };
+        let mut styles = simplecss::StyleSheet::new();
+        for style in raw_stylesheets.iter() {
+            styles.parse_more(style);
+        }
 
-            let mut raw_stylesheets = Vec::new();
-            for node in head.children().filter(Node::is_element) {
-                match node.tag_name().name() {
-                    "link" if node.attribute("rel") == Some("stylesheet") => {
-                        let href = node.attribute("href").unwrap();
-                        let css_item = self.archive.resolve_hyperlink(item_idx, href)?;
-                        let css = self.archive.retrieve_idx(css_item)?;
-                        raw_stylesheets.push(css);
+        // panic!("{:#?}", styles.rules);
+
+        let mut rules = Vec::new();
+
+        for (i, rule) in styles.rules.iter().enumerate() {
+            for dec in &rule.declarations {
+                match dec.name {
+                    "font-style" if dec.value == "italic" || dec.value.contains("oblique") => {
+                        rules.push((i, Style::ITALIC))
                     }
-                    "style" if matches!(node.attribute("type"), Some("text/css") | None) => {
-                        raw_stylesheets
-                            .push(node.text().context("style tag without text")?.to_owned());
+                    "font-weight"
+                        if matches!(dec.value, "bold" | "bolder")
+                            || dec.value.parse::<usize>().is_ok_and(|x| x > 400) =>
+                    {
+                        rules.push((i, Style::BOLD))
                     }
+                    "text-align" if dec.value == "center" => rules.push((i, Style::CENTER)),
                     _ => {}
                 }
             }
-
-            let mut styles = simplecss::StyleSheet::new();
-            for style in raw_stylesheets.iter() {
-                styles.parse_more(style);
-            }
-
-            // panic!("{:#?}", styles.rules);
-
-            let mut rules = Vec::new();
-
-            for (i, rule) in styles.rules.iter().enumerate() {
-                for dec in &rule.declarations {
-                    match dec.name {
-                        "font-style" if dec.value == "italic" || dec.value.contains("oblique") => {
-                            rules.push((i, Style::ITALIC))
-                        }
-                        "font-weight"
-                            if matches!(dec.value, "bold" | "bolder")
-                                || dec.value.parse::<usize>().is_ok_and(|x| x > 400) =>
-                        {
-                            rules.push((i, Style::BOLD))
-                        }
-                        "text-align" if dec.value == "center" => rules.push((i, Style::CENTER)),
-                        _ => {}
-                    }
-                }
-            }
-
-            // panic!("{:#?}", body.document().input_text());
-
-            let cutoff = (i == end - 1).then_some(end_fragment).flatten();
-            if let Some(fragment) = fragment.take() {
-                traverse_body_from_id(
-                    body,
-                    fragment,
-                    &mut cb,
-                    &styles,
-                    &rules,
-                    Style::empty(),
-                    cutoff,
-                )?;
-            } else {
-                traverse_body(body, &mut cb, &styles, &rules, Style::empty(), cutoff)?;
-            }
         }
+
+        // panic!("{:#?}", body.document().input_text());
+
+        // let cutoff = (i == end - 1).then_some(end_fragment).flatten();
+        let cutoff = None;
+        // if let Some(fragment) = fragment.take() {
+        //     traverse_body_from_id(
+        //         body,
+        //         fragment,
+        //         &mut cb,
+        //         &styles,
+        //         &rules,
+        //         Style::empty(),
+        //         cutoff,
+        //     )?;
+        // } else {
+        traverse_body(body, &mut cb, &styles, &rules, Style::empty(), cutoff)?;
+        // }
+        // }
 
         Ok((self.title(), self.toc.0[entry].name.as_ref()))
     }
@@ -819,10 +820,13 @@ fn traverse_body(
         Ok(false)
     }
 
+    // panic!("{}", node.document().input_text());
     if node.is_text() {
         let text = node.text().context("invalid text node")?;
+        let re = regex::Regex::new(r"\s+").unwrap();
+        let text = re.replace_all(text, " ");
         if !text.trim().is_empty() {
-            let content = Content::Text(style, text);
+            let content = Content::Text(style, &text);
             cb(content);
         }
         return Ok(false);
@@ -837,7 +841,7 @@ fn traverse_body(
 
     match node.tag_name().name() {
         // "a" if node.has_attribute("href") => _ = recurse(node, cb, styles, rules, style, end)?,
-        "p" | "div" | "blockquote" | "br" => {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "blockquote" | "br" => {
             recurse(node, cb, styles, rules, style, end)?;
             cb(Content::Linebreak)
         }

@@ -16,6 +16,7 @@ anyhow = "1.0.71"
 bitflags = "2.3.2"
 crossterm = { git = "https://github.com/crossterm-rs/crossterm/", version = "0.26.1" }
 dirs = "5.0.1"
+regex = "1.9.1"
 roxmltree = "0.18.0"
 simplecss = "0.2.1"
 textwrap = "0.16.0"

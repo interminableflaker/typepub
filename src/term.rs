@@ -299,6 +299,7 @@ impl ChapterDisplay {
     pub fn enter(dimensions: Arc<Dimensions>, book: &mut Epub, chapter: usize) -> Self {
         // TODO more robust solution, this is all temporary
         let mut text = String::new();
+
         book.traverse(chapter, |content| match content {
             Content::Text(_, s) => {
                 const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', " ... ")];
@@ -308,7 +309,6 @@ impl ChapterDisplay {
                         s = s.replace(c, rep).into();
                     }
                 }
-                // println!("{}", s);
                 text.push_str(&s);
             }
             Content::Linebreak => {

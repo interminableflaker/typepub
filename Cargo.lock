@@ -473,6 +473,7 @@ dependencies = [
  "bitflags 2.3.3",
  "crossterm",
  "dirs",
+ "regex",
  "roxmltree",
  "simplecss",
  "textwrap",

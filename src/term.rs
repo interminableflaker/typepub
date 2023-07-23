@@ -524,8 +524,12 @@ impl ChapterDisplay {
             text = &text[len.bytes..];
             cur_style = style;
         }
-        if line.line.linebreak == Linebreak::Existing && end > slice_end {
-            write!(w, "{PARAGRAPH_TERMINATOR}")?;
+        if end > slice_end {
+            match line.line.linebreak {
+                Linebreak::Existing => write!(w, "{PARAGRAPH_TERMINATOR}")?,
+                Linebreak::Wrapped => w.write_all(b" ")?,
+                Linebreak::Eof => {}
+            }
         }
         // TODO: this also disables error coloring
         crossterm::queue!(w, SetAttribute(Attribute::Reset))?;

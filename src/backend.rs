@@ -10,6 +10,7 @@ const REPLACEMENTS: &[(char, &str)] = &[
     ('—', "--"),
     ('…', "..."),
 ];
+
 #[rustfmt::skip]
 const ALTERNATIVES: &[(char, &[char])] = &[
     ('\'', &['‘', '’']),
@@ -48,13 +49,15 @@ impl Backend {
             }
             Content::Linebreak => {
                 char_count -= trim_end_in_place(&mut text);
-                char_count += 1;
-                text.push('\n');
+                if !matches!(text.chars().last(), None) {
+                    char_count += 1;
+                    text.push('\n');
+                }
             }
             Content::Image => {
-                let img_text = "img";
-                char_count += img_text.chars().count();
-                text.push_str(img_text);
+                // let img_text = "img";
+                // char_count += img_text.chars().count();
+                // text.push_str(img_text);
             }
             Content::Title => todo!(),
         })

@@ -8,9 +8,7 @@ use typepub::{
 };
 
 // TODO: features
-// - render styles
 // - nicer virtual styling
-// - chapter select
 // - book select maybe?
 // - progress saving
 // - scorescreen; wpm/acc display at end

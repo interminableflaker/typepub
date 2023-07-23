@@ -629,12 +629,11 @@ impl Epub {
 
         // for (i, item_idx) in (start..end).map(|i| (i, self.spine.0[i])) {
         let mut data = self.archive.retrieve(item_idx)?;
+        // panic!("{}", data);
 
         let xml = match roxmltree::Document::parse(&data) {
             Ok(x) => x,
             Err(roxmltree::Error::UnknownEntityReference(name, _)) => {
-                // TODO: may have to do this recursively, if there are more
-                //       entities looking to cause trouble
                 let (needle, replacement) = match name.as_ref() {
                     "nbsp" => ("&nbsp;", " "),
                     _ => panic!(),

@@ -825,7 +825,6 @@ fn traverse_body(
     }
 
     if matches!((node.attribute("id"), end), (Some(a), Some(b)) if a == b) {
-        // bail
         return Ok(true);
     }
 

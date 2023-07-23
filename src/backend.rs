@@ -1,3 +1,22 @@
+use std::borrow::Cow;
+
+use crate::{
+    epub::{Content, Epub},
+    style::{Style, Styling},
+};
+
+#[rustfmt::skip]
+const REPLACEMENTS: &[(char, &str)] = &[
+    ('—', "--"),
+    ('…', "..."),
+];
+#[rustfmt::skip]
+const ALTERNATIVES: &[(char, &[char])] = &[
+    ('\'', &['‘', '’']),
+    ('\"', &['“', '”']),
+    (' ', &[' '])
+];
+
 pub struct Backend {
     text: String,
     typed: String,
@@ -5,10 +24,43 @@ pub struct Backend {
     cursor_prev: Len,
     errors: Vec<Len>,
     deleted_errors: Vec<Len>,
+    styling: Styling<Len>,
 }
 
 impl Backend {
-    pub fn new(text: String) -> Self {
+    pub fn new(book: &mut Epub, chapter: usize) -> Self {
+        let mut text = String::new();
+        let mut char_count = 0;
+        let mut styling = Styling::builder();
+
+        book.traverse(chapter, |content| match content {
+            Content::Text(style, mut s) => {
+                if matches!(text.chars().last(), None | Some('\n')) {
+                    s = s.trim_start();
+                }
+                let s = replace_unicode_multichars(&mut s);
+                let len_chars = s.chars().count();
+                let start = Len::new(text.len(), char_count);
+                let end = Len::new(start.bytes + s.len(), start.chars + len_chars);
+                styling.add(style, start..end);
+                char_count += len_chars;
+                text.push_str(&s);
+            }
+            Content::Linebreak => {
+                char_count -= trim_end_in_place(&mut text);
+                char_count += 1;
+                text.push('\n');
+            }
+            Content::Image => {
+                let img_text = "img";
+                char_count += img_text.chars().count();
+                text.push_str(img_text);
+            }
+            Content::Title => todo!(),
+        })
+        .unwrap();
+        trim_end_in_place(&mut text);
+
         Self {
             text,
             typed: String::new(),
@@ -16,6 +68,7 @@ impl Backend {
             cursor_prev: Len::new(0, 0),
             errors: Vec::new(),
             deleted_errors: Vec::new(),
+            styling: styling.build(),
         }
     }
 
@@ -96,6 +149,10 @@ impl Backend {
                 .extend(self.errors.drain(first_deleted_error..));
         }
     }
+
+    pub fn style_iter(&self, start: Len, end: Len) -> impl Iterator<Item = (Style, Len)> + '_ {
+        self.styling.iter(start, end)
+    }
 }
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
@@ -158,12 +215,31 @@ impl std::ops::SubAssign<Self> for Len {
     }
 }
 
-// TODO: probably make this configurable
 fn chars_are_equal_including_unicode_alternatives(expected: char, got: char) -> bool {
-    match got {
-        '\'' if ['‘', '’'].contains(&expected) => true,
-        '\"' if ['“', '”'].contains(&expected) => true,
-        ' ' if [' '].contains(&expected) => true,
-        _ => expected == got,
+    if expected == got {
+        true
+    } else if let Some(alts) = ALTERNATIVES.iter().find(|x| x.0 == got) {
+        alts.1.contains(&expected)
+    } else {
+        false
     }
+}
+
+fn replace_unicode_multichars(s: &str) -> Cow<str> {
+    let mut s = Cow::Borrowed(s);
+    for &(c, rep) in REPLACEMENTS {
+        if s.contains(c) {
+            s = s.replace(c, rep).into();
+        }
+    }
+    s
+}
+
+fn trim_end_in_place(s: &mut String) -> usize {
+    let mut count = 0;
+    while matches!(s.chars().last(), Some(c) if c.is_whitespace()) {
+        count += 1;
+        s.pop();
+    }
+    count
 }

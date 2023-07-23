@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     cmp::Ordering,
     io::Write,
     ops::{Bound, RangeBounds},
@@ -9,21 +8,20 @@ use std::{
 use crossterm::{
     cursor,
     event::{KeyCode, KeyEvent, KeyModifiers},
-    execute, queue,
+    queue,
     style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor},
     terminal,
 };
 
 use crate::{
     backend::{Backend, Len},
-    epub::{Content, Epub},
-    style::{Style, Styling},
+    epub::Epub,
+    style::Style,
 };
 
 const PARAGRAPH_TERMINATOR: &str = "↵";
 // const PARAGRAPH_TERMINATOR: &str = "¬";
 // const PARAGRAPH_TERMINATOR: &str = " ";
-const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', "...")];
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Linebreak {
@@ -92,7 +90,7 @@ impl Display {
     }
 
     pub fn enter(&mut self, w: &mut impl Write) -> anyhow::Result<()> {
-        execute!(w, terminal::EnterAlternateScreen, cursor::Hide)?;
+        queue!(w, terminal::EnterAlternateScreen, cursor::Hide)?;
         terminal::enable_raw_mode()?;
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info: &std::panic::PanicInfo| {
@@ -111,7 +109,8 @@ impl Display {
 
     fn cleanup(w: &mut impl Write) -> anyhow::Result<()> {
         terminal::disable_raw_mode()?;
-        execute!(w, ResetColor, cursor::Show, terminal::LeaveAlternateScreen)?;
+        queue!(w, ResetColor, cursor::Show, terminal::LeaveAlternateScreen)?;
+        w.flush()?;
         Ok(())
     }
 
@@ -258,7 +257,6 @@ struct ChapterDisplay {
     dimensions: Arc<Dimensions>,
     backend: Backend,
     lines: Vec<VirtualLine>,
-    styling: Styling<Len>,
     previous_line: usize,
     needs_full_render: bool,
 }
@@ -301,59 +299,13 @@ impl DisplayState for ChapterDisplay {
 
 impl ChapterDisplay {
     pub fn enter(dimensions: Arc<Dimensions>, book: &mut Epub, chapter: usize) -> Self {
-        fn trim_end_in_place(s: &mut String) -> usize {
-            let mut count = 0;
-            while matches!(s.chars().last(), Some(c) if c.is_whitespace()) {
-                count += 1;
-                s.pop();
-            }
-            count
-        }
-
-        let mut text = String::new();
-        let mut char_count = 0;
-        let mut styling = Styling::builder();
-
-        book.traverse(chapter, |content| match content {
-            Content::Text(style, mut s) => {
-                if matches!(text.chars().last(), None | Some('\n')) {
-                    s = s.trim_start();
-                }
-                let mut s = Cow::Borrowed(s);
-                for &(c, rep) in REPLACEMENTS {
-                    if s.contains(c) {
-                        s = s.replace(c, rep).into();
-                    }
-                }
-
-                let len_chars = s.chars().count();
-                let start = Len::new(text.len(), char_count);
-                let end = Len::new(start.bytes + s.len(), start.chars + len_chars);
-                styling.add(style, start..end);
-                char_count += len_chars;
-                text.push_str(&s);
-            }
-            Content::Linebreak => {
-                char_count -= trim_end_in_place(&mut text);
-                char_count += 1;
-                text.push('\n');
-            }
-            Content::Image => {
-                let img_text = "img";
-                char_count += img_text.chars().count();
-                text.push_str(img_text);
-            }
-            Content::Title => todo!(),
-        })
-        .unwrap();
-        trim_end_in_place(&mut text);
-        let lines = Self::wrap_text(&text, dimensions.width);
+        let backend = Backend::new(book, chapter);
+        let lines = Self::wrap_text(backend.text(), dimensions.width);
 
         Self {
             dimensions,
-            backend: Backend::new(text),
+            backend,
             lines,
-            styling: styling.build(),
             previous_line: 0,
             needs_full_render: true,
         }
@@ -495,8 +447,8 @@ impl ChapterDisplay {
         let mut text = self.virtual_line_str(line.line)[start.bytes..slice_end.bytes].as_bytes();
         let mut cur_style = Style::empty();
         for (style, len) in self
-            .styling
-            .iter(line.line.start + start, line.line.start + slice_end)
+            .backend
+            .style_iter(line.line.start + start, line.line.start + slice_end)
         {
             for attr in (cur_style & !style)
                 .iter()

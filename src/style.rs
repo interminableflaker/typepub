@@ -220,11 +220,11 @@ mod test {
             .add(Style::ITALIC, 5..10)
             .build();
 
-        let res: Vec<_> = styles.iter(0, 10).collect();
+        let res: Vec<_> = styles.iter(1, 10).collect();
         assert_eq!(
             &res[..],
             &[
-                (Style::ITALIC, 2),
+                (Style::ITALIC, 1),
                 (Style::empty(), 1),
                 (Style::BOLD, 2),
                 (Style::ITALIC | Style::BOLD, 2),

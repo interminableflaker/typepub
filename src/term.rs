@@ -303,9 +303,7 @@ impl ChapterDisplay {
         // TODO more robust solution, this is all temporary
         let mut text = String::new();
         let mut char_count = 0;
-
         let mut styling = Styling::builder();
-
         book.traverse(chapter, |content| match content {
             Content::Text(style, mut s) => {
                 if matches!(text.chars().last(), None | Some('\n')) {
@@ -526,10 +524,11 @@ impl ChapterDisplay {
             text = &text[len.bytes..];
             cur_style = style;
         }
-        crossterm::queue!(w, SetAttribute(Attribute::Reset))?;
         if line.line.linebreak == Linebreak::Existing && end > slice_end {
             write!(w, "{PARAGRAPH_TERMINATOR}")?;
         }
+        // TODO: this also disables error coloring
+        crossterm::queue!(w, SetAttribute(Attribute::Reset))?;
         Ok(())
     }
 

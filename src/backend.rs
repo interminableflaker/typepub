@@ -98,10 +98,22 @@ impl Backend {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub struct Len {
     pub bytes: usize,
     pub chars: usize,
+}
+
+impl std::cmp::PartialOrd for Len {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.bytes.cmp(&other.bytes))
+    }
+}
+
+impl std::cmp::Ord for Len {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.bytes.cmp(&other.bytes)
+    }
 }
 
 impl Len {

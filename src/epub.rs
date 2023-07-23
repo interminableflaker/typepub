@@ -9,6 +9,8 @@ use roxmltree::Node;
 use simplecss::StyleSheet;
 use url::Url;
 
+use crate::style::Style;
+
 pub fn ebook_directory() -> anyhow::Result<std::path::PathBuf> {
     #[cfg(windows)]
     let mut dir = dirs::document_dir().context("could not locate home directory")?;
@@ -520,15 +522,6 @@ impl EpubPreview {
             spine,
             toc,
         })
-    }
-}
-
-bitflags::bitflags! {
-    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    pub struct Style: u8 {
-        const ITALIC = 0b001;
-        const BOLD   = 0b010;
-        const CENTER = 0b100;
     }
 }
 

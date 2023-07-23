@@ -9,12 +9,15 @@ use std::{
 use crossterm::{
     cursor,
     event::{KeyCode, KeyEvent, KeyModifiers},
-    execute, queue, style, terminal,
+    execute, queue,
+    style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor},
+    terminal,
 };
 
 use crate::{
     backend::{Backend, Len},
     epub::{Content, Epub},
+    style::{Style, Styling},
 };
 
 const PARAGRAPH_TERMINATOR: &str = "↵";
@@ -44,8 +47,12 @@ struct ScreenLine<'a> {
 }
 
 impl ScreenLine<'_> {
-    fn len_bytes(&self) -> usize {
-        self.line.end.bytes - self.line.start.bytes
+    fn len(&self) -> Len {
+        self.line.end - self.line.start
+    }
+
+    fn len_with_break(&self) -> Len {
+        self.line.end - self.line.start + self.line.separator_len
     }
 }
 
@@ -103,12 +110,7 @@ impl Display {
 
     fn cleanup(w: &mut impl Write) -> anyhow::Result<()> {
         terminal::disable_raw_mode()?;
-        execute!(
-            w,
-            style::ResetColor,
-            cursor::Show,
-            terminal::LeaveAlternateScreen
-        )?;
+        execute!(w, ResetColor, cursor::Show, terminal::LeaveAlternateScreen)?;
         Ok(())
     }
 
@@ -255,6 +257,7 @@ struct ChapterDisplay {
     dimensions: Arc<Dimensions>,
     backend: Backend,
     lines: Vec<VirtualLine>,
+    styling: Styling<Len>,
     previous_line: usize,
     needs_full_render: bool,
 }
@@ -299,10 +302,13 @@ impl ChapterDisplay {
     pub fn enter(dimensions: Arc<Dimensions>, book: &mut Epub, chapter: usize) -> Self {
         // TODO more robust solution, this is all temporary
         let mut text = String::new();
+        let mut char_count = 0;
+
+        let mut styling = Styling::builder();
 
         book.traverse(chapter, |content| match content {
-            Content::Text(_, mut s) => {
-                if text.chars().last() == Some('\n') {
+            Content::Text(style, mut s) => {
+                if matches!(text.chars().last(), None | Some('\n')) {
                     s = s.trim_start();
                 }
                 const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', "...")];
@@ -312,26 +318,37 @@ impl ChapterDisplay {
                         s = s.replace(c, rep).into();
                     }
                 }
+
+                let len_chars = s.chars().count();
+                let start = Len::new(text.len(), char_count);
+                let end = Len::new(start.bytes + s.len(), start.chars + len_chars);
+                styling.add(style, start..end);
+                char_count += len_chars;
                 text.push_str(&s);
             }
             Content::Linebreak => {
                 while matches!(text.chars().last(), Some(c) if c.is_whitespace()) {
+                    char_count -= 1;
                     text.pop();
                 }
+                char_count += 1;
                 text.push('\n');
             }
-            Content::Image => text.push_str("img"),
+            Content::Image => {
+                let img_text = "img";
+                char_count += img_text.chars().count();
+                text.push_str(img_text);
+            }
             Content::Title => todo!(),
         })
         .unwrap();
-        let text = text.trim().to_owned();
-        // panic!("{:#?}", text);
         let lines = Self::wrap_text(&text, dimensions.width);
 
         Self {
             dimensions,
             backend: Backend::new(text),
             lines,
+            styling: styling.build(),
             previous_line: 0,
             needs_full_render: true,
         }
@@ -454,19 +471,22 @@ impl ChapterDisplay {
     where
         W: Write,
     {
-        w.write_all(b"\x1b[7;31m")?;
+        crossterm::queue!(
+            w,
+            SetAttribute(Attribute::Reverse),
+            SetForegroundColor(Color::Red),
+        )?;
         cb(w)?;
-        w.write_all(b"\x1b[0m")?;
+        crossterm::queue!(
+            w,
+            SetForegroundColor(Color::Reset),
+            SetAttribute(Attribute::NoReverse),
+        )?;
         Ok(())
     }
 
     fn render_line(&self, w: &mut impl Write, line: &ScreenLine) -> anyhow::Result<()> {
-        queue!(w, cursor::MoveTo(self.content_starting_col(), line.row))?;
-        w.write_all(self.virtual_line_str(line.line).as_bytes())?;
-        if line.line.linebreak == Linebreak::Existing {
-            write!(w, "{PARAGRAPH_TERMINATOR}")?;
-        }
-        Ok(())
+        self.render_range_in_line(w, line, Len::new(0, 0), line.len_with_break())
     }
 
     fn render_range_in_line(
@@ -474,18 +494,40 @@ impl ChapterDisplay {
         w: &mut impl Write,
         line: &ScreenLine,
         start: Len,
-        end_bytes: usize,
+        end: Len,
     ) -> anyhow::Result<()> {
         queue!(
             w,
             cursor::MoveTo(self.content_starting_col() + start.chars as u16, line.row)
         )?;
-        let slice_end = end_bytes.min(line.len_bytes());
-        let slice = &self.virtual_line_str(line.line)[start.bytes..slice_end];
-        if !slice.is_empty() {
-            w.write_all(slice.as_bytes())?;
+        let slice_end = end.min(line.len());
+        let mut text = self.virtual_line_str(line.line)[start.bytes..slice_end.bytes].as_bytes();
+        let mut cur_style = Style::empty();
+        for (style, len) in self
+            .styling
+            .iter(line.line.start + start, line.line.start + slice_end)
+        {
+            for attr in (cur_style & !style)
+                .iter()
+                .filter_map(|s| match s {
+                    Style::BOLD => Some(Attribute::NormalIntensity),
+                    Style::ITALIC => Some(Attribute::NoItalic),
+                    _ => None,
+                })
+                .chain((style & !cur_style).iter().filter_map(|s| match s {
+                    Style::BOLD => Some(Attribute::Bold),
+                    Style::ITALIC => Some(Attribute::Italic),
+                    _ => None,
+                }))
+            {
+                crossterm::queue!(w, SetAttribute(attr))?;
+            }
+            w.write_all(&text[..len.bytes])?;
+            text = &text[len.bytes..];
+            cur_style = style;
         }
-        if line.line.linebreak == Linebreak::Existing && end_bytes > slice_end {
+        crossterm::queue!(w, SetAttribute(Attribute::Reset))?;
+        if line.line.linebreak == Linebreak::Existing && end > slice_end {
             write!(w, "{PARAGRAPH_TERMINATOR}")?;
         }
         Ok(())
@@ -568,16 +610,19 @@ impl ChapterDisplay {
                         None => break 'outer,
                     };
                     let x = err - line.line.start;
-                    let len_bytes = self.backend.text()[err.bytes..]
-                        .chars()
-                        .next()
-                        .unwrap()
-                        .len_utf8();
+                    let len = Len::new(
+                        self.backend.text()[err.bytes..]
+                            .chars()
+                            .next()
+                            .unwrap()
+                            .len_utf8(),
+                        1,
+                    );
                     match cursor_pos.chars < last_cursor_pos.chars {
-                        true => self.render_range_in_line(w, &line, x, x.bytes + len_bytes)?,
-                        false => self.with_error(w, |w| {
-                            self.render_range_in_line(w, &line, x, x.bytes + len_bytes)
-                        })?,
+                        true => self.render_range_in_line(w, &line, x, x + len)?,
+                        false => {
+                            self.with_error(w, |w| self.render_range_in_line(w, &line, x, x + len))?
+                        }
                     }
                     cur += 1;
                 }

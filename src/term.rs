@@ -300,10 +300,20 @@ impl DisplayState for ChapterDisplay {
 
 impl ChapterDisplay {
     pub fn enter(dimensions: Arc<Dimensions>, book: &mut Epub, chapter: usize) -> Self {
+        fn trim_end_in_place(s: &mut String) -> usize {
+            let mut count = 0;
+            while matches!(s.chars().last(), Some(c) if c.is_whitespace()) {
+                count += 1;
+                s.pop();
+            }
+            count
+        }
+
         // TODO more robust solution, this is all temporary
         let mut text = String::new();
         let mut char_count = 0;
         let mut styling = Styling::builder();
+
         book.traverse(chapter, |content| match content {
             Content::Text(style, mut s) => {
                 if matches!(text.chars().last(), None | Some('\n')) {
@@ -325,10 +335,7 @@ impl ChapterDisplay {
                 text.push_str(&s);
             }
             Content::Linebreak => {
-                while matches!(text.chars().last(), Some(c) if c.is_whitespace()) {
-                    char_count -= 1;
-                    text.pop();
-                }
+                char_count -= trim_end_in_place(&mut text);
                 char_count += 1;
                 text.push('\n');
             }
@@ -340,6 +347,7 @@ impl ChapterDisplay {
             Content::Title => todo!(),
         })
         .unwrap();
+        trim_end_in_place(&mut text);
         let lines = Self::wrap_text(&text, dimensions.width);
 
         Self {
@@ -403,13 +411,7 @@ impl ChapterDisplay {
     }
 
     fn char_index_to_virtual_line(&self, idx: usize) -> usize {
-        self.lines
-            .binary_search_by(|element| match element.start.chars.cmp(&idx) {
-                Ordering::Equal => Ordering::Less,
-                ord => ord,
-            })
-            .unwrap_err()
-            .saturating_sub(1)
+        self.lines.partition_point(|e| e.end.chars < idx)
     }
 
     fn to_virtual(&self, cursor: usize) -> (u16, usize) {
@@ -443,17 +445,9 @@ impl ChapterDisplay {
         let end_vln = (top_of_screen_vln + end_bound as isize).max(0) as usize;
         let offset = (start_vln as isize - top_of_screen_vln).max(0) as usize;
 
-        let heuristic = match start_bound <= self.middle_row() {
-            true => line.saturating_sub((self.middle_row() - start_bound) as usize),
-            false => line + (start_bound - self.middle_row()) as usize / 2,
-        };
-
-        self.lines
-            .get(heuristic..)
-            .and_then(|ls| ls.iter().position(|l| l.line >= start_vln))
-            .and_then(|idx| self.lines.get(idx + heuristic..))
-            .into_iter()
-            .flatten()
+        let start = self.lines.partition_point(|l| l.line < start_vln);
+        self.lines[start..]
+            .iter()
             .take_while(move |vl| vl.line < end_vln)
             .map(move |vl| ScreenLine {
                 line: vl,

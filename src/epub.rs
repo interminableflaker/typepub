@@ -145,7 +145,7 @@ pub struct TocEntry {
 
 impl TocEntry {
     pub fn name(&self) -> &str {
-        &*self.name
+        &self.name
     }
 
     pub fn depth(&self) -> usize {
@@ -186,8 +186,7 @@ impl Toc {
         let list = toc_nav
             .children()
             .filter(Node::is_element)
-            .skip(1)
-            .next()
+            .nth(1)
             // .find(|n| n.tag_name().name() == "ol")
             .context("toc missing navlist")?;
         // println!("{:?}", list.document());

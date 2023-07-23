@@ -23,6 +23,7 @@ use crate::{
 const PARAGRAPH_TERMINATOR: &str = "↵";
 // const PARAGRAPH_TERMINATOR: &str = "¬";
 // const PARAGRAPH_TERMINATOR: &str = " ";
+const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', "...")];
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Linebreak {
@@ -309,7 +310,6 @@ impl ChapterDisplay {
             count
         }
 
-        // TODO more robust solution, this is all temporary
         let mut text = String::new();
         let mut char_count = 0;
         let mut styling = Styling::builder();
@@ -319,7 +319,6 @@ impl ChapterDisplay {
                 if matches!(text.chars().last(), None | Some('\n')) {
                     s = s.trim_start();
                 }
-                const REPLACEMENTS: &[(char, &str)] = &[('—', "--"), ('…', "...")];
                 let mut s = Cow::Borrowed(s);
                 for &(c, rep) in REPLACEMENTS {
                     if s.contains(c) {

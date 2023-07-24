@@ -142,15 +142,8 @@ impl Backend {
         self.cursor_prev = self.cursor;
         self.cursor -= len;
 
-        // TODO: binary search this
-        if let Some(first_deleted_error) = self
-            .errors
-            .iter()
-            .position(|&i| i.chars >= self.cursor.chars)
-        {
-            self.deleted_errors
-                .extend(self.errors.drain(first_deleted_error..));
-        }
+        let first = self.errors.partition_point(|&i| i < self.cursor);
+        self.deleted_errors.extend(self.errors.drain(first..));
     }
 
     pub fn style_iter(&self, start: Len, end: Len) -> impl Iterator<Item = (Style, Len)> + '_ {

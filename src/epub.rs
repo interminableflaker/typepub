@@ -9,7 +9,10 @@ use roxmltree::Node;
 use simplecss::StyleSheet;
 use url::Url;
 
-use crate::style::Style;
+use crate::{
+    backend::Len,
+    style::{Style, Styling},
+};
 
 pub fn ebook_directory() -> anyhow::Result<std::path::PathBuf> {
     #[cfg(windows)]
@@ -524,13 +527,6 @@ impl EpubPreview {
     }
 }
 
-pub enum Content<'a> {
-    Title,
-    Text(Style, &'a str),
-    Linebreak,
-    Image,
-}
-
 impl EpubArchive {
     fn name_in_archive(&self, path: &str) -> String {
         let mut abs_path = self.root.to_path_buf(); // is there no way to avoid this?
@@ -609,27 +605,21 @@ impl simplecss::Element for XmlNode<'_, '_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CssAttribute {
+    Style(Style),
+    Align(Align),
+}
+
 impl Epub {
     pub fn traverse(
         &mut self,
         entry: usize,
-        mut cb: impl FnMut(Content<'_>),
+        replacements: &(&[char], &[&str]),
+        mut cb: impl FnMut(Content<'_>, Option<Align>),
     ) -> anyhow::Result<(&str, &str)> {
-        // let mut fragment = self.toc.0[entry].fragment.as_deref();
-        // panic!("{:?}", fragment);
-        // let start = self.toc.0[entry].idx;
-        // let (end, end_fragment) = match self.toc.0.get(entry + 1) {
-        //     Some(entry) if entry.fragment.is_some() => (entry.idx + 1, entry.fragment.as_deref()),
-        //     Some(entry) => (entry.idx, None),
-        //     None => (self.toc.0.last().unwrap().idx + 1, None),
-        // };
-
-        // panic!("{:?}, {:?}, {:?}, {:?}", start, fragment, end, end_fragment);
         let item_idx = self.spine.0[self.toc.0[entry].idx];
-
-        // for (i, item_idx) in (start..end).map(|i| (i, self.spine.0[i])) {
         let mut data = self.archive.retrieve(item_idx)?;
-        // panic!("{}", data);
 
         let xml = match roxmltree::Document::parse(&data) {
             Ok(x) => x,
@@ -685,38 +675,40 @@ impl Epub {
             for dec in &rule.declarations {
                 match dec.name {
                     "font-style" if dec.value == "italic" || dec.value.contains("oblique") => {
-                        rules.push((i, Style::ITALIC))
+                        rules.push((i, CssAttribute::Style(Style::ITALIC)))
                     }
                     "font-weight"
                         if matches!(dec.value, "bold" | "bolder")
                             || dec.value.parse::<usize>().is_ok_and(|x| x > 400) =>
                     {
-                        rules.push((i, Style::BOLD))
+                        rules.push((i, CssAttribute::Style(Style::BOLD)))
                     }
-                    "text-align" if dec.value == "center" => rules.push((i, Style::CENTER)),
+                    "text-align" => {
+                        let align = match dec.value {
+                            "left" => Align::Left,
+                            "center" => Align::Center,
+                            "right" => Align::Right,
+                            "justify" => Align::Left,
+                            "inherit" => continue,
+                            a => panic!("invalid text-align? ({a})"),
+                        };
+                        rules.push((i, CssAttribute::Align(align)))
+                    }
                     _ => {}
                 }
             }
         }
 
         // panic!("{:#?}", body.document().input_text());
-
-        // let cutoff = (i == end - 1).then_some(end_fragment).flatten();
-        let cutoff = None;
-        // if let Some(fragment) = fragment.take() {
-        //     traverse_body_from_id(
-        //         body,
-        //         fragment,
-        //         &mut cb,
-        //         &styles,
-        //         &rules,
-        //         Style::empty(),
-        //         cutoff,
-        //     )?;
-        // } else {
-        traverse_body(body, &mut cb, &styles, &rules, Style::empty(), cutoff)?;
-        // }
-        // }
+        traverse_body(
+            body,
+            &mut cb,
+            &replacements,
+            &styles,
+            &rules,
+            Style::empty(),
+            None,
+        )?;
 
         Ok((self.title(), self.toc.0[entry].name.as_ref()))
     }
@@ -728,10 +720,11 @@ impl Epub {
 
 fn update_style(
     styles: &StyleSheet,
-    rules: &[(usize, Style)],
+    rules: &[(usize, CssAttribute)],
     node: Node,
     mut style: Style,
-) -> Style {
+    mut align: Option<Align>,
+) -> (Style, Option<Align>) {
     // TODO apply style from inline style attribute
     for added_style in rules.iter().filter_map(|&(i, style)| {
         styles.rules[i]
@@ -739,107 +732,224 @@ fn update_style(
             .matches(&XmlNode(node))
             .then_some(style)
     }) {
-        style |= added_style;
+        match added_style {
+            CssAttribute::Style(s) => style |= s,
+            CssAttribute::Align(a) => align = Some(a),
+        }
     }
     match node.tag_name().name() {
         "i" | "em" => style |= Style::ITALIC,
         "b" | "strong" => style |= Style::BOLD,
-        "center" => style |= Style::CENTER,
+        "center" => align = Some(Align::Center),
         _ => {}
     }
-    style
+    (style, align)
 }
 
-fn traverse_body_from_id(
-    node: Node,
-    id: &str,
-    cb: &mut impl FnMut(Content<'_>),
-    styles: &StyleSheet,
-    rules: &[(usize, Style)],
-    style: Style,
-    end: Option<&str>,
-) -> anyhow::Result<Option<bool>> {
-    if node.attribute("id") == Some(id) {
-        if traverse_body(node, cb, styles, rules, Style::empty(), end)? {
-            return Ok(None);
-        };
-        return Ok(Some(true));
-    }
-    let style = update_style(styles, rules, node, style);
-    let mut found = false;
-    for child in node.children() {
-        match found {
-            true => {
-                if traverse_body(child, cb, styles, rules, Style::empty(), end)? {
-                    return Ok(None);
-                }
-            }
-            false => {
-                found = match traverse_body_from_id(child, id, cb, styles, rules, style, end)? {
-                    Some(f) => f,
-                    None => {
-                        return Ok(None);
-                    }
-                }
-            }
-        }
-    }
-    Ok(Some(found))
+#[derive(Debug, Clone, Copy)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
 }
+
+pub enum Content<'a> {
+    Header(&'a str, Styling<Len>),
+    Paragraph(&'a str, Styling<Len>),
+    Quote(&'a str, Styling<Len>),
+    Image,
+}
+
+// traverse should take replacements as argument
+// and do it at same time as combining spaces
+// can use `split`
 
 fn traverse_body(
     node: roxmltree::Node,
-    cb: &mut impl FnMut(Content<'_>),
+    cb: &mut impl FnMut(Content<'_>, Option<Align>),
+    replacements: &(&[char], &[&str]),
     styles: &StyleSheet,
-    rules: &[(usize, Style)],
+    rules: &[(usize, CssAttribute)],
     style: Style,
-    end: Option<&str>,
+    align: Option<Align>,
 ) -> anyhow::Result<bool> {
     fn recurse(
         node: roxmltree::Node,
-        cb: &mut impl FnMut(Content<'_>),
+        cb: &mut impl FnMut(Content<'_>, Option<Align>),
+        replacements: &(&[char], &[&str]),
         styles: &StyleSheet,
-        rules: &[(usize, Style)],
+        rules: &[(usize, CssAttribute)],
         style: Style,
-        end: Option<&str>,
+        align: Option<Align>,
     ) -> anyhow::Result<bool> {
         for node in node.children() {
-            if traverse_body(node, cb, styles, rules, style, end)? {
+            if traverse_body(node, cb, replacements, styles, rules, style, align)? {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
+    fn accumulate_text(
+        node: roxmltree::Node,
+        replacements: &(&[char], &[&str]),
+        styles: &StyleSheet,
+        rules: &[(usize, CssAttribute)],
+        style: Style,
+        align: Option<Align>,
+    ) -> anyhow::Result<(String, Styling<Len>)> {
+        let mut text = String::new();
+        let mut styling = Styling::builder();
+        traverse_block(
+            node,
+            replacements,
+            styles,
+            rules,
+            style,
+            align,
+            &mut text,
+            &mut styling,
+        )?;
+        trim_end_in_place(&mut text);
+        Ok((text, styling.build()))
+    }
+
     // panic!("{}", node.document().input_text());
+    let (style, align) = update_style(styles, rules, node, style, align);
+
+    match node.tag_name().name() {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            let (text, styling) = accumulate_text(node, replacements, styles, rules, style, align)?;
+            if !text.is_empty() {
+                cb(Content::Header(&text, styling), align);
+            }
+        }
+        "p" => {
+            let (text, styling) = accumulate_text(node, replacements, styles, rules, style, align)?;
+            if !text.is_empty() {
+                cb(Content::Paragraph(&text, styling), align);
+            }
+        }
+        "blockquote" => {
+            let (text, styling) = accumulate_text(node, replacements, styles, rules, style, align)?;
+            if !text.is_empty() {
+                cb(Content::Quote(&text, styling), align);
+            }
+        }
+        n if n == "image" || (n == "img" && node.has_attribute("src")) => {
+            cb(Content::Image, align);
+        }
+        _ => _ = recurse(node, cb, replacements, styles, rules, style, align)?,
+    }
+    Ok(false)
+}
+
+fn traverse_block(
+    node: roxmltree::Node,
+    replacements: &(&[char], &[&str]),
+    styles: &StyleSheet,
+    rules: &[(usize, CssAttribute)],
+    style: Style,
+    align: Option<Align>,
+    text: &mut String,
+    styling: &mut crate::style::Builder<Len>,
+) -> anyhow::Result<bool> {
+    fn recurse(
+        node: roxmltree::Node,
+        replacements: &(&[char], &[&str]),
+        styles: &StyleSheet,
+        rules: &[(usize, CssAttribute)],
+        style: Style,
+        align: Option<Align>,
+        text: &mut String,
+        styling: &mut crate::style::Builder<Len>,
+    ) -> anyhow::Result<bool> {
+        for node in node.children() {
+            if traverse_block(
+                node,
+                replacements,
+                styles,
+                rules,
+                style,
+                align,
+                text,
+                styling,
+            )? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     if node.is_text() {
-        let text = node.text().context("invalid text node")?;
-        let re = regex::Regex::new(r"\s+").unwrap();
-        let text = re.replace_all(text, " ");
-        if !text.is_empty() {
-            let content = Content::Text(style, &text);
-            cb(content);
+        let s = node.text().context("invalid text node")?;
+
+        if !s.is_empty() {
+            let start = Len::new(text.len(), text.chars().count());
+
+            if s.chars().next().is_some_and(|c| c.is_ascii_whitespace())
+                && text.chars().last().is_some()
+                && !text.chars().last().unwrap().is_ascii_whitespace()
+            {
+                text.push(' ');
+            }
+
+            for s in s.split_ascii_whitespace() {
+                let mut last_end = 0;
+                for (start, part) in s.match_indices(replacements.0) {
+                    let part = part.chars().next().unwrap();
+                    let rep_idx = replacements.0.iter().position(|&c| c == part).unwrap();
+                    let to = replacements.1[rep_idx];
+                    let chunk = &s[last_end..start];
+                    text.push_str(chunk);
+                    text.push_str(to);
+                    last_end = start + part.len_utf8();
+                }
+                text.push_str(&s[last_end..s.len()]);
+                text.push(' ');
+            }
+
+            if text.len() > start.bytes
+                && s.chars().last().is_some_and(|c| !c.is_ascii_whitespace())
+            {
+                text.pop();
+            }
+
+            let end = Len::new(
+                text.len(),
+                start.chars + text[start.bytes..].chars().count(),
+            );
+
+            styling.add(style, start..end);
         }
         return Ok(false);
     }
 
-    if matches!((node.attribute("id"), end), (Some(a), Some(b)) if a == b) {
-        return Ok(true);
+    let (style, align) = update_style(styles, rules, node, style, align);
+
+    if node.tag_name().name() == "br" {
+        text.push('\n');
     }
 
-    let style = update_style(styles, rules, node, style);
+    recurse(
+        node,
+        replacements,
+        styles,
+        rules,
+        style,
+        align,
+        text,
+        styling,
+    )
+}
 
-    match node.tag_name().name() {
-        // "a" if node.has_attribute("href") => _ = recurse(node, cb, styles, rules, style, end)?,
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "blockquote" | "br" => {
-            recurse(node, cb, styles, rules, style, end)?;
-            cb(Content::Linebreak)
-        }
-        "img" if node.has_attribute("src") => cb(Content::Image),
-        "image" => cb(Content::Image),
-        _ => _ = recurse(node, cb, styles, rules, style, end)?,
+fn trim_end_in_place(s: &mut String) -> usize {
+    let mut count = 0;
+    while matches!(s.chars().last(), Some(c) if c.is_whitespace()) {
+        count += 1;
+        s.pop();
     }
-    Ok(false)
+    count
 }
 
 fn parse_hyperlink(base: &str, href: &str) -> anyhow::Result<Url> {

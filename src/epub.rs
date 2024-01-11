@@ -504,6 +504,8 @@ impl EpubPreview {
             root,
         };
 
+        // panic!("{}", archive.retrieve(archive.manifest.0.len() - 3)?);
+
         let (spine, ncx_idx) = children
             .next()
             .context("rootfile missing spine")
@@ -620,6 +622,8 @@ impl Epub {
     ) -> anyhow::Result<(&str, &str)> {
         let item_idx = self.spine.0[self.toc.0[entry].idx];
         let mut data = self.archive.retrieve(item_idx)?;
+
+        println!("{}", data);
 
         let xml = match roxmltree::Document::parse(&data) {
             Ok(x) => x,
@@ -760,10 +764,6 @@ pub enum Content<'a> {
     Image,
 }
 
-// traverse should take replacements as argument
-// and do it at same time as combining spaces
-// can use `split`
-
 fn traverse_body(
     node: roxmltree::Node,
     cb: &mut impl FnMut(Content<'_>, Option<Align>),
@@ -820,18 +820,21 @@ fn traverse_body(
     match node.tag_name().name() {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let (text, styling) = accumulate_text(node, replacements, styles, rules, style, align)?;
+            println!("emitting text: {}", text);
             if !text.is_empty() {
                 cb(Content::Header(&text, styling), align);
             }
         }
         "p" => {
             let (text, styling) = accumulate_text(node, replacements, styles, rules, style, align)?;
+            println!("emitting para text: {}", text);
             if !text.is_empty() {
                 cb(Content::Paragraph(&text, styling), align);
             }
         }
         "blockquote" => {
             let (text, styling) = accumulate_text(node, replacements, styles, rules, style, align)?;
+            println!("emitting quote text: {}", text);
             if !text.is_empty() {
                 cb(Content::Quote(&text, styling), align);
             }

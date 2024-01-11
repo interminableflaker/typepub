@@ -19,6 +19,18 @@ use crate::{
     style::Style,
 };
 
+/* virtual styling
+
+block-level styling
+- center
+- blockquote (nesting..?)
+
+range-based styling
+- bold
+- italic
+
+*/
+
 const PARAGRAPH_TERMINATOR: &str = "↵";
 // const PARAGRAPH_TERMINATOR: &str = "¬";
 // const PARAGRAPH_TERMINATOR: &str = " ";
@@ -101,7 +113,7 @@ impl Display {
         Ok(())
     }
 
-    pub fn exit(&self, w: &mut impl Write) -> anyhow::Result<()> {
+    pub fn exit(w: &mut impl Write) -> anyhow::Result<()> {
         Self::cleanup(w)?;
         let _ = std::panic::take_hook();
         Ok(())

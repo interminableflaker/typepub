@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
         display.render(&mut w)?;
     }
 
-    display.exit(&mut w)?;
+    typepub::term::Display::exit(&mut w)?;
 
     Ok(())
 }

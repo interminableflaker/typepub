@@ -26,24 +26,82 @@ pub struct Backend {
     styling: Styling<Len>,
 }
 
+// struct Node {
+//     range: std::ops::Range<usize>,
+//     kind: BlockStyle,
+//     inner: NodeInner,
+// }
+
+// enum NodeInner {
+//     Internal(Vec<Node>),
+//     Leaf,
+// }
+
+// enum BlockStyle {
+//     Title,
+// }
+
+mod block {
+    use crate::{backend::Len, epub::Align};
+
+    pub struct Block {
+        range: std::ops::Range<Len>,
+        kind: Kind,
+        align: Option<Align>,
+        // It can be a header OR a paragraph OR a blockquote of arbitrary nestedness
+        // any of these can be force aligned left, right, center
+    }
+
+    impl Block {
+        pub fn new(range: std::ops::Range<Len>, kind: Kind, align: Option<Align>) -> Self {
+            Self { range, kind, align }
+        }
+    }
+
+    pub enum Kind {
+        Header,
+        Paragraph,
+        Quote,
+    }
+}
+
 impl Backend {
     pub fn new(book: &mut Epub, chapter: usize) -> Self {
         let mut text = String::new();
         let mut char_count = 0;
         let mut styling = Styling::builder().build();
-        book.traverse(chapter, &REPLACEMENTS, |content, _align| match content {
-            Content::Header(s, stys) | Content::Paragraph(s, stys) | Content::Quote(s, stys) => {
-                if !text.is_empty() {
-                    text.push('\n');
-                    char_count += 1;
+        let mut blocks: Vec<block::Block> = Vec::new();
+        crate::term::Display::exit(&mut std::io::stdout()).unwrap();
+        book.traverse(chapter, &REPLACEMENTS, |content, align| {
+            let block_kind = match content {
+                Content::Header(_, _) => block::Kind::Header,
+                Content::Paragraph(_, _) => block::Kind::Paragraph,
+                Content::Quote(_, _) => block::Kind::Quote,
+                Content::Image => todo!(),
+            };
+
+            match content {
+                Content::Header(s, stys)
+                | Content::Paragraph(s, stys)
+                | Content::Quote(s, stys) => {
+                    if !text.is_empty() {
+                        text.push('\n');
+                        char_count += 1;
+                    }
+                    let start = Len::new(text.len(), char_count);
+                    styling.add_from_disjoint_other(stys, start);
+                    text.push_str(&s);
+                    char_count += s.chars().count();
+                    let end = Len::new(text.len(), char_count);
+                    let block = block::Block::new(start..end, block_kind, None);
+                    blocks.push(block);
                 }
-                styling.add_from_disjoint_other(stys, Len::new(text.len(), char_count));
-                text.push_str(&s);
-                char_count += s.chars().count();
+                Content::Image => {}
             }
-            Content::Image => {}
         })
         .unwrap();
+
+        panic!();
 
         Self {
             text,
